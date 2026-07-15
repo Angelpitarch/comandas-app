@@ -205,7 +205,8 @@ class AccLine {
 class Payment {
   final String method;
   final double amountUsd;
-  Payment(this.method, this.amountUsd);
+  final String? reference;
+  Payment(this.method, this.amountUsd, {this.reference});
 }
 class SaleLine {
   final String name;
@@ -225,7 +226,7 @@ class Sale {
         DateTime.tryParse((r['at'] ?? '') as String) ?? DateTime.now(),
         [for (final l in (r['lines'] as List? ?? [])) SaleLine((l['name'] ?? '') as String, ((l['qty'] ?? 0) as num).toInt(), ((l['lineUsd'] ?? 0) as num).toDouble())],
         ((r['total_usd'] ?? 0) as num).toDouble(),
-        [for (final p in (r['payments'] as List? ?? [])) Payment((p['method'] ?? '') as String, ((p['amountUsd'] ?? 0) as num).toDouble())],
+        [for (final p in (r['payments'] as List? ?? [])) Payment((p['method'] ?? '') as String, ((p['amountUsd'] ?? 0) as num).toDouble(), reference: p['reference'] as String?)],
       );
 }
 
@@ -290,6 +291,17 @@ class Store extends ChangeNotifier {
   Future<void> addIngredient(Ingredient i) async { try { await sb.from('ingredients').insert(i.toRow()); } catch (e) { _onErr(e); } }
   Future<void> updateIngredient(Ingredient i) async { try { await sb.from('ingredients').update(i.toRow()).eq('id', i.id); } catch (e) { _onErr(e); } }
   Future<void> deleteIngredient(Ingredient i) async { try { await sb.from('ingredients').delete().eq('id', i.id); } catch (e) { _onErr(e); } }
+  Future<void> freeTable(int n) async {
+    try { await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', n); } catch (e) { _onErr(e); }
+  }
+  Future<void> transferTable(int from, int to) async {
+    try {
+      await sb.from('account_items').update(<String, dynamic>{'table_number': to}).eq('table_number', from);
+      await sb.from('tickets').update(<String, dynamic>{'table_number': to}).eq('table_number', from).neq('status', 'anulada');
+      await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada', 'waiter': currentUser}).eq('number', to);
+      await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', from);
+    } catch (e) { _onErr(e); }
+  }
 
   int _nextTicketNumber() {
     var m = 0;
@@ -300,12 +312,12 @@ class Store extends ChangeNotifier {
   String tableStatus(int n) {
     final t = tables.where((e) => e.number == n).toList();
     final st = t.isEmpty ? 'disponible' : t.first.status;
-    if (st == 'disponible') return 'disponible';
+    if (st == 'pagada') return 'pagada';
     final tk = tickets.where((x) => x.table == n && x.status != 'anulada' && x.status != 'entregada').toList();
     if (tk.any((x) => x.status == 'lista')) return 'listo';
     if (tk.isNotEmpty) return 'cocina';
     if (account(n).isNotEmpty) return 'servido';
-    return 'ocupada';
+    return 'disponible';
   }
 
   Future<void> setRate(double r) async {
@@ -356,7 +368,7 @@ class Store extends ChangeNotifier {
           'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note, 'unit_usd': toUsd(it.unit(), it.p.cur),
         }];
         await sb.from('account_items').insert(accRows);
-        await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada'}).eq('number', table);
+        await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada', 'waiter': currentUser, 'opened_at': DateTime.now().toIso8601String()}).eq('number', table);
       }
       for (final it in items) {
         if (it.p.trackStock) {
@@ -397,11 +409,11 @@ class Store extends ChangeNotifier {
       }
       await sb.from('sales').insert(<String, dynamic>{
         'table_number': table, 'total_usd': total, 'lines': saleLines,
-        'payments': [for (final p in payments) <String, dynamic>{'method': p.method, 'amountUsd': p.amountUsd}],
+        'payments': [for (final p in payments) <String, dynamic>{'method': p.method, 'amountUsd': p.amountUsd, 'reference': p.reference}],
       });
       if (table != null) {
         await sb.from('account_items').delete().eq('table_number', table);
-        await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', table);
+        await sb.from('dining_tables').update(<String, dynamic>{'status': 'pagada'}).eq('number', table);
         await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada');
       } else {
         cart(cartKey ?? '').clear();
@@ -492,6 +504,7 @@ Color statusColor(String s) => switch (s) {
       'cocina' => const Color(0xFF42A5F5),
       'listo' => const Color(0xFF26C6DA),
       'servido' => const Color(0xFFAB47BC),
+      'pagada' => const Color(0xFF8D6E63),
       _ => const Color(0xFF90A4AE),
     };
 String statusLabel(String s) => switch (s) {
@@ -500,6 +513,7 @@ String statusLabel(String s) => switch (s) {
       'cocina' => 'En cocina',
       'listo' => 'Pedido listo',
       'servido' => 'Servido',
+      'pagada' => 'Pagada - liberar',
       _ => s,
     };
 
@@ -662,10 +676,32 @@ class TablesScreen extends StatelessWidget {
 class TableDetailScreen extends StatelessWidget {
   final int table;
   const TableDetailScreen({super.key, required this.table});
+
+  void _cambiarMesa(BuildContext context) {
+    final destinos = store.tables.where((t) => t.number != table && store.tableStatus(t.number) == 'disponible').toList();
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text('Cambiar de mesa'),
+      content: destinos.isEmpty
+          ? const Text('No hay mesas disponibles.')
+          : SizedBox(width: double.maxFinite, child: ListView(shrinkWrap: true, children: [
+              for (final t in destinos)
+                ListTile(leading: const Icon(Icons.table_bar), title: Text('Mesa ${t.number}'),
+                  onTap: () async {
+                    Navigator.pop(dctx);
+                    await store.transferTable(table, t.number);
+                    if (context.mounted) { Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Comanda movida a Mesa ${t.number}'))); }
+                  }),
+            ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar'))],
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Mesa $table')),
+      appBar: AppBar(title: Text('Mesa $table'), actions: [
+        IconButton(tooltip: 'Cambiar de mesa', icon: const Icon(Icons.swap_horiz), onPressed: () => _cambiarMesa(context)),
+      ]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final acc = store.account(table);
         final tk = store.ticketsOf(table);
@@ -699,19 +735,28 @@ class TableDetailScreen extends StatelessWidget {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Row(children: [const Text('Total mesa', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), Text(dualUsd(total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))]),
               const SizedBox(height: 10),
-              Row(children: [
-                Expanded(child: OutlinedButton.icon(
-                  onPressed: () { store.openTable(table); Navigator.push(context, MaterialPageRoute(builder: (_) => OrderScreen(cartKey: 'mesa-$table', table: table))); },
-                  icon: const Icon(Icons.add), label: const Text('Agregar'))),
-                const SizedBox(width: 8),
-                Expanded(child: OutlinedButton.icon(
-                  onPressed: acc.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptScreen(table: table))),
-                  icon: const Icon(Icons.receipt_long), label: const Text('Comprobante'))),
-              ]),
-              const SizedBox(height: 8),
-              SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
-                onPressed: acc.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentScreen(table: table))),
-                icon: const Icon(Icons.point_of_sale), label: const Text('Cobrar'))),
+              if (store.tableStatus(table) == 'pagada') ...[
+                const Text('Cuenta PAGADA. Libera la mesa cuando el cliente se retire.', style: TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFF66BB6A)),
+                  onPressed: () async { await store.freeTable(table); if (context.mounted) Navigator.pop(context); },
+                  icon: const Icon(Icons.check_circle), label: const Text('Liberar mesa'))),
+              ] else ...[
+                Row(children: [
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => OrderScreen(cartKey: 'mesa-$table', table: table))),
+                    icon: const Icon(Icons.add), label: const Text('Agregar'))),
+                  const SizedBox(width: 8),
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: acc.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptScreen(table: table))),
+                    icon: const Icon(Icons.receipt_long), label: const Text('Comprobante'))),
+                ]),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+                  onPressed: acc.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentScreen(table: table))),
+                  icon: const Icon(Icons.point_of_sale), label: const Text('Cobrar'))),
+              ],
             ]))))
         ]);
       }),
@@ -957,6 +1002,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
   bool _paying = false;
   final Map<int, int> _assign = {};
   final Map<int, String> _method = {};
+  final Map<int, TextEditingController> _refCtrls = {};
+  TextEditingController _refFor(int i) => _refCtrls.putIfAbsent(i, () => TextEditingController());
+  @override
+  void dispose() { for (final c in _refCtrls.values) { c.dispose(); } super.dispose(); }
 
   List<_Line> get _lines => widget.table != null
       ? store.account(widget.table!).map((a) => _Line(a.name, a.qty, a.lineUsd)).toList()
@@ -981,7 +1030,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
     final payments = <Payment>[];
     for (var i = 0; i < parts.length; i++) {
       if (parts[i] <= 0) continue;
-      payments.add(Payment(_method[i] ?? store.methods.first, parts[i]));
+      payments.add(Payment(_method[i] ?? store.methods.first, parts[i], reference: _refFor(i).text.trim().isEmpty ? null : _refFor(i).text.trim()));
     }
     if (payments.isEmpty) return;
     setState(() => _paying = true);
@@ -996,11 +1045,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
     await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
       icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
       title: const Text('Cobro registrado'),
-      content: Text(widget.table != null ? 'Mesa ${widget.table} liberada.' : 'Pedido para llevar cobrado.'),
+      content: Text(widget.table != null ? 'Mesa ${widget.table}: cuenta PAGADA.\nLibera la mesa cuando el cliente se retire.' : 'Pedido para llevar cobrado.'),
       actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Listo'))]));
     if (!mounted) return;
     nav.pop();
-    if (widget.table != null) nav.pop();
   }
 
   @override
@@ -1052,6 +1100,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   Row(children: [Text(parts.length == 1 ? 'Monto' : 'Persona ${i + 1}', style: const TextStyle(fontWeight: FontWeight.w600)), const Spacer(), Text(dualUsd(parts[i]), style: const TextStyle(fontWeight: FontWeight.bold))]),
                   const SizedBox(height: 6),
                   Wrap(spacing: 6, children: [for (final m in store.methods) ChoiceChip(label: Text(m, style: const TextStyle(fontSize: 12)), selected: (_method[i] ?? store.methods.first) == m, onSelected: (_) => setState(() => _method[i] = m))]),
+                  const SizedBox(height: 8),
+                  TextField(controller: _refFor(i), style: const TextStyle(fontSize: 13),
+                    decoration: const InputDecoration(isDense: true, labelText: 'Referencia bancaria (opcional)', border: OutlineInputBorder(), prefixIcon: Icon(Icons.confirmation_number_outlined))),
                 ]))),
           ])),
           SafeArea(top: false, child: Padding(padding: const EdgeInsets.all(12),
@@ -1420,6 +1471,10 @@ class HistoryScreen extends StatelessWidget {
         final byMethod = store.byMethodToday();
         final sortedUnits = units.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
         return ListView(padding: const EdgeInsets.all(16), children: [
+          SizedBox(width: double.infinity, child: FilledButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DaySummaryScreen())),
+            icon: const Icon(Icons.print), label: const Text('Resumen para imprimir'))),
+          const SizedBox(height: 12),
           Card(color: kPrimary.withOpacity(0.08), child: Padding(padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('Ventas de hoy', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1448,7 +1503,7 @@ class HistoryScreen extends StatelessWidget {
           else for (final s in sales)
             Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
               title: Text('${s.table != null ? 'Mesa ${s.table}' : 'Para llevar'}  ·  ${hhmm(s.at)}'),
-              subtitle: Text(s.payments.map((p) => p.method).join(', ')),
+              subtitle: Text(s.payments.map((p) => p.reference != null && p.reference!.isNotEmpty ? '${p.method} (ref ${p.reference})' : p.method).join(', ')),
               trailing: Text(usd(s.totalUsd), style: const TextStyle(fontWeight: FontWeight.bold)))),
         ]);
       }),
@@ -1590,6 +1645,50 @@ class _IngredientFormState extends State<IngredientForm> {
           icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
           label: Text(_saving ? 'Guardando...' : 'Guardar ingrediente'))),
       ]),
+    );
+  }
+}
+
+// ======================= RESUMEN DEL DIA (IMPRIMIBLE) =======================
+class DaySummaryScreen extends StatelessWidget {
+  const DaySummaryScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Resumen del dia')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final sales = store.todaySales;
+        final units = store.unitsToday().entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+        final byMethod = store.byMethodToday();
+        final total = store.todayTotalUsd;
+        final now = DateTime.now();
+        const mono = TextStyle(fontFamily: 'monospace', fontSize: 13.5, height: 1.5, color: Colors.black);
+        return Center(child: SingleChildScrollView(child: Container(
+          margin: const EdgeInsets.all(16), padding: const EdgeInsets.all(18),
+          constraints: const BoxConstraints(maxWidth: 380), color: Colors.white,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            const Center(child: Text('RESUMEN DEL DIA', style: TextStyle(fontFamily: 'monospace', fontSize: 16, fontWeight: FontWeight.bold))),
+            Center(child: Text('${two(now.day)}/${two(now.month)}/${now.year}  ${hhmm(now)}', style: mono)),
+            const Text('==============================', style: mono),
+            const Text('PRODUCTOS VENDIDOS', style: mono),
+            if (units.isEmpty) const Text('  (sin ventas)', style: mono)
+            else for (final e in units) Text('  ${e.value} x ${e.key}', style: mono),
+            const Text('------------------------------', style: mono),
+            const Text('INGRESOS POR METODO', style: mono),
+            if (byMethod.isEmpty) const Text('  (sin ventas)', style: mono)
+            else for (final e in byMethod.entries) Text('  ${e.key}: ${usd(e.value)}  |  ${ves(e.value * store.rate)}', style: mono),
+            const Text('==============================', style: mono),
+            Text('TOTAL: ${usd(total)}', style: mono.copyWith(fontWeight: FontWeight.bold, fontSize: 15)),
+            Text('       ${ves(total * store.rate)}', style: mono.copyWith(fontWeight: FontWeight.bold)),
+            Text('Cuentas cobradas: ${sales.length}', style: mono),
+            Text('Tasa: ${ves(store.rate)} / \$', style: mono.copyWith(fontSize: 11)),
+            const SizedBox(height: 14),
+            Center(child: FilledButton.icon(
+              onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Impresion por Bluetooth se agrega en la Entrega 4'))),
+              icon: const Icon(Icons.print), label: const Text('Imprimir'))),
+          ]),
+        )));
+      }),
     );
   }
 }
