@@ -64,8 +64,10 @@ class Product {
   double stock;
   double minStock;
   bool trackStock;
+  List<RecipeItem> recipe;
+  List<ComboItem> comboItems;
   Product(this.id, this.name, this.emoji, this.cat, this.price, this.cur,
-      {this.sizes = const [], this.extras = const [], this.quita = const [], this.available = true, this.stock = 0, this.minStock = 0, this.trackStock = false});
+      {this.sizes = const [], this.extras = const [], this.quita = const [], this.available = true, this.stock = 0, this.minStock = 0, this.trackStock = false, this.recipe = const [], this.comboItems = const []});
 
   factory Product.fromRow(Map<String, dynamic> r) => Product(
         r['id'] as String,
@@ -78,6 +80,8 @@ class Product {
         stock: ((r['stock'] ?? 0) as num).toDouble(),
         minStock: ((r['min_stock'] ?? 0) as num).toDouble(),
         trackStock: (r['track_stock'] ?? false) as bool,
+        recipe: [for (final x in (r['recipe'] as List? ?? [])) RecipeItem((x['ingredient_id'] ?? '') as String, ((x['qty'] ?? 0) as num).toDouble())],
+        comboItems: [for (final x in (r['combo_items'] as List? ?? [])) ComboItem((x['product_id'] ?? '') as String, ((x['qty'] ?? 0) as num).toDouble())],
         sizes: [for (final s in (r['sizes'] as List? ?? [])) Sz(s['name'] as String, (s['delta'] as num).toDouble())],
         extras: [for (final e in (r['extras'] as List? ?? [])) Extra((e['id'] ?? '') as String, e['name'] as String, ((e['price'] ?? 0) as num).toDouble())],
         quita: [for (final q in (r['quita'] as List? ?? [])) q.toString()],
@@ -93,6 +97,8 @@ class Product {
         'stock': stock,
         'min_stock': minStock,
         'track_stock': trackStock,
+        'recipe': [for (final r in recipe) <String, dynamic>{'ingredient_id': r.ingredientId, 'qty': r.qty}],
+        'combo_items': [for (final c in comboItems) <String, dynamic>{'product_id': c.productId, 'qty': c.qty}],
         'sizes': [for (final s in sizes) <String, dynamic>{'name': s.name, 'delta': s.delta}],
         'extras': [for (final e in extras) <String, dynamic>{'id': e.id, 'name': e.name, 'price': e.price}],
         'quita': quita,
@@ -302,6 +308,52 @@ class Store extends ChangeNotifier {
       await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', from);
     } catch (e) { _onErr(e); }
   }
+  Product? productById(String id) { for (final p in products) { if (p.id == id) return p; } return null; }
+  Ingredient? ingredientById(String id) { for (final i in ingredients) { if (i.id == id) return i; } return null; }
+  int maxMakeable(Product p) {
+    const big = 1000000000;
+    if (p.comboItems.isNotEmpty) {
+      var m = big;
+      for (final c in p.comboItems) {
+        final cp = productById(c.productId);
+        if (cp == null || c.qty <= 0) continue;
+        final cm = maxMakeable(cp);
+        if (cm < 0) continue;
+        final canDo = (cm / c.qty).floor();
+        if (canDo < m) m = canDo;
+      }
+      return m == big ? -1 : m;
+    }
+    if (p.recipe.isNotEmpty) {
+      var m = big;
+      for (final r in p.recipe) {
+        final ing = ingredientById(r.ingredientId);
+        if (ing == null || r.qty <= 0) continue;
+        final canDo = (ing.stock / r.qty).floor();
+        if (canDo < m) m = canDo;
+      }
+      return m == big ? -1 : m;
+    }
+    return -1;
+  }
+  Future<void> _consume(Product p, double q) async {
+    if (p.comboItems.isNotEmpty) {
+      for (final c in p.comboItems) {
+        final cp = productById(c.productId);
+        if (cp != null) await _consume(cp, c.qty * q);
+      }
+      return;
+    }
+    if (p.recipe.isNotEmpty) {
+      for (final r in p.recipe) {
+        await sb.rpc('deduct_ingredient', params: <String, dynamic>{'i_id': r.ingredientId, 'i_qty': r.qty * q});
+      }
+      return;
+    }
+    if (p.trackStock) {
+      await sb.rpc('deduct_stock', params: <String, dynamic>{'p_id': p.id, 'p_qty': q});
+    }
+  }
 
   int _nextTicketNumber() {
     var m = 0;
@@ -371,9 +423,7 @@ class Store extends ChangeNotifier {
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada', 'waiter': currentUser, 'opened_at': DateTime.now().toIso8601String()}).eq('number', table);
       }
       for (final it in items) {
-        if (it.p.trackStock) {
-          await sb.rpc('deduct_stock', params: <String, dynamic>{'p_id': it.p.id, 'p_qty': it.qty});
-        }
+        await _consume(it.p, it.qty.toDouble());
       }
       if (!keepCart) items.clear();
       notifyListeners();
@@ -1308,7 +1358,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
                 leading: Text(p.emoji, style: const TextStyle(fontSize: 24)),
                 title: Text(p.name),
-                subtitle: Text('${dualPrice(p.price, p.cur)}  ·  base: ${p.cur.code}${p.trackStock ? '  ·  stock: ${p.stock.toStringAsFixed(0)}' : ''}', style: const TextStyle(fontSize: 11.5)),
+                subtitle: Text('${dualPrice(p.price, p.cur)}${p.trackStock ? '  ·  stock: ${p.stock.toStringAsFixed(0)}' : ''}${store.maxMakeable(p) >= 0 ? '  ·  alcanza ~${store.maxMakeable(p)}' : ''}', style: const TextStyle(fontSize: 11.5)),
                 onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProductForm(existing: p))),
                 trailing: Switch(value: p.available, onChanged: (_) => store.toggleProduct(p)))),
           ],
@@ -1331,6 +1381,8 @@ class _ProductFormState extends State<ProductForm> {
   late Currency _cur;
   late bool _available, _useSizes, _track;
   final List<List<TextEditingController>> _extras = [];
+  final List<_RRow> _recipeRows = [];
+  final List<_CRow> _comboRows = [];
   bool _saving = false;
   @override
   void initState() {
@@ -1348,11 +1400,17 @@ class _ProductFormState extends State<ProductForm> {
     _stock = TextEditingController(text: e != null ? e.stock.toStringAsFixed(0) : '0');
     _minStock = TextEditingController(text: e != null ? e.minStock.toStringAsFixed(0) : '0');
     if (e != null) for (final ex in e.extras) { _extras.add([TextEditingController(text: ex.name), TextEditingController(text: ex.price.toStringAsFixed(2))]); }
+    if (e != null) {
+      for (final r in e.recipe) { _recipeRows.add(_RRow(r.ingredientId, TextEditingController(text: fmtQty(r.qty)))); }
+      for (final c in e.comboItems) { _comboRows.add(_CRow(c.productId, TextEditingController(text: fmtQty(c.qty)))); }
+    }
   }
   @override
   void dispose() {
     _name.dispose(); _emoji.dispose(); _price.dispose(); _quita.dispose(); _stock.dispose(); _minStock.dispose();
     for (final row in _extras) { for (final c in row) { c.dispose(); } }
+    for (final r in _recipeRows) { r.qty.dispose(); }
+    for (final c in _comboRows) { c.qty.dispose(); }
     super.dispose();
   }
   Future<void> _save() async {
@@ -1374,15 +1432,25 @@ class _ProductFormState extends State<ProductForm> {
     final emoji = _emoji.text.trim().isEmpty ? '🍽️' : _emoji.text.trim();
     final stock = double.tryParse(_stock.text.replaceAll(',', '.')) ?? 0;
     final minStock = double.tryParse(_minStock.text.replaceAll(',', '.')) ?? 0;
+    final recipe = <RecipeItem>[
+      for (final r in _recipeRows)
+        if (r.ingredientId != null) RecipeItem(r.ingredientId!, double.tryParse(r.qty.text.replaceAll(',', '.')) ?? 0),
+    ];
+    final comboItems = <ComboItem>[
+      for (final c in _comboRows)
+        if (c.productId != null) ComboItem(c.productId!, double.tryParse(c.qty.text.replaceAll(',', '.')) ?? 0),
+    ];
     setState(() => _saving = true);
     final e = widget.existing;
     if (e != null) {
       e.name = name; e.emoji = emoji; e.cat = _cat; e.price = price; e.cur = _cur;
       e.available = _available; e.sizes = sizes; e.extras = extras; e.quita = quita;
       e.stock = stock; e.minStock = minStock; e.trackStock = _track;
+      e.recipe = _cat == Cat.combos ? <RecipeItem>[] : recipe;
+      e.comboItems = _cat == Cat.combos ? comboItems : <ComboItem>[];
       await store.updateProduct(e);
     } else {
-      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: stock, minStock: minStock, trackStock: _track));
+      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: stock, minStock: minStock, trackStock: _track, recipe: _cat == Cat.combos ? <RecipeItem>[] : recipe, comboItems: _cat == Cat.combos ? comboItems : <ComboItem>[]));
     }
     if (!mounted) return;
     Navigator.pop(context);
@@ -1448,6 +1516,46 @@ class _ProductFormState extends State<ProductForm> {
             Expanded(flex: 2, child: TextField(controller: _extras[i][1], keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Precio', isDense: true, border: OutlineInputBorder()))),
             IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.red), onPressed: () => setState(() { _extras[i][0].dispose(); _extras[i][1].dispose(); _extras.removeAt(i); })),
           ])),
+        const Divider(height: 24),
+        if (_cat == Cat.combos) ...[
+          Row(children: [
+            const Expanded(child: Text('Componentes del combo', style: TextStyle(fontWeight: FontWeight.bold))),
+            TextButton.icon(onPressed: () => setState(() => _comboRows.add(_CRow(null, TextEditingController(text: '1')))), icon: const Icon(Icons.add), label: const Text('Agregar')),
+          ]),
+          const Text('Elige productos ya creados y su cantidad. El precio del combo lo pones tu arriba (no se suma solo).', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          for (var i = 0; i < _comboRows.length; i++)
+            Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [
+              Expanded(flex: 3, child: DropdownButtonFormField<String>(
+                value: store.products.any((x) => x.id == _comboRows[i].productId && x.cat != Cat.combos) ? _comboRows[i].productId : null,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Producto', isDense: true, border: OutlineInputBorder()),
+                items: [for (final pr in store.products.where((x) => x.cat != Cat.combos)) DropdownMenuItem(value: pr.id, child: Text(pr.name, overflow: TextOverflow.ellipsis))],
+                onChanged: (v) => setState(() => _comboRows[i].productId = v))),
+              const SizedBox(width: 8),
+              SizedBox(width: 64, child: TextField(controller: _comboRows[i].qty, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Cant.', isDense: true, border: OutlineInputBorder()))),
+              IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.red), onPressed: () => setState(() { _comboRows[i].qty.dispose(); _comboRows.removeAt(i); })),
+            ])),
+        ] else ...[
+          Row(children: [
+            const Expanded(child: Text('Receta (ingredientes)', style: TextStyle(fontWeight: FontWeight.bold))),
+            TextButton.icon(onPressed: () => setState(() => _recipeRows.add(_RRow(null, TextEditingController(text: '1')))), icon: const Icon(Icons.add), label: const Text('Agregar')),
+          ]),
+          const Text('Que ingredientes consume y cuanto. Se descuentan del inventario al vender.', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          if (store.ingredients.isEmpty)
+            const Padding(padding: EdgeInsets.only(top: 6), child: Text('Primero agrega ingredientes en el Inventario.', style: TextStyle(fontSize: 12, color: Colors.red))),
+          for (var i = 0; i < _recipeRows.length; i++)
+            Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [
+              Expanded(flex: 3, child: DropdownButtonFormField<String>(
+                value: store.ingredients.any((ing) => ing.id == _recipeRows[i].ingredientId) ? _recipeRows[i].ingredientId : null,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Ingrediente', isDense: true, border: OutlineInputBorder()),
+                items: [for (final ing in store.ingredients) DropdownMenuItem(value: ing.id, child: Text('${ing.name} (${ing.unit})', overflow: TextOverflow.ellipsis))],
+                onChanged: (v) => setState(() => _recipeRows[i].ingredientId = v))),
+              const SizedBox(width: 8),
+              SizedBox(width: 64, child: TextField(controller: _recipeRows[i].qty, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Cant.', isDense: true, border: OutlineInputBorder()))),
+              IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.red), onPressed: () => setState(() { _recipeRows[i].qty.dispose(); _recipeRows.removeAt(i); })),
+            ])),
+        ],
         const SizedBox(height: 20),
         SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
           onPressed: _saving ? null : _save,
@@ -1691,4 +1799,27 @@ class DaySummaryScreen extends StatelessWidget {
       }),
     );
   }
+}
+
+
+// ======================= RECETAS Y COMBOS (modelos) =======================
+class RecipeItem {
+  String ingredientId;
+  double qty;
+  RecipeItem(this.ingredientId, this.qty);
+}
+class ComboItem {
+  String productId;
+  double qty;
+  ComboItem(this.productId, this.qty);
+}
+class _RRow {
+  String? ingredientId;
+  final TextEditingController qty;
+  _RRow(this.ingredientId, this.qty);
+}
+class _CRow {
+  String? productId;
+  final TextEditingController qty;
+  _CRow(this.productId, this.qty);
 }
