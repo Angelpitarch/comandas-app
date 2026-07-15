@@ -255,6 +255,7 @@ class Store extends ChangeNotifier {
   Map<int, List<AccLine>> accounts = {};
   List<Takeaway> takeaways = [];
   List<Cancellation> cancellations = [];
+  List<Employee> employees = [];
   Map<String, List<AccLine>> takeawayAccounts = {};
   List<Sale> sales = [];
   List<Ingredient> ingredients = [];
@@ -291,6 +292,9 @@ class Store extends ChangeNotifier {
     }, onError: _onErr);
     sb.from('cancellations').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       cancellations = rows.map((r) => Cancellation.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
+    sb.from('employees').stream(primaryKey: ['id']).order('name').listen((rows) {
+      employees = rows.map((r) => Employee.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
@@ -362,6 +366,9 @@ class Store extends ChangeNotifier {
       await sb.from('takeaways').delete().eq('id', id);
     } catch (e) { _onErr(e); }
   }
+  Future<void> addEmployee(Employee e) async { try { await sb.from('employees').insert(e.toRow()); } catch (x) { _onErr(x); } }
+  Future<void> updateEmployee(Employee e) async { try { await sb.from('employees').update(e.toRow()).eq('id', e.id); } catch (x) { _onErr(x); } }
+  Future<void> deleteEmployee(Employee e) async { try { await sb.from('employees').delete().eq('id', e.id); } catch (x) { _onErr(x); } }
   Future<void> transferTable(int from, int to) async {
     try {
       await sb.from('account_items').update(<String, dynamic>{'table_number': to}).eq('table_number', from);
@@ -873,7 +880,7 @@ class TablesScreen extends StatelessWidget {
                         decoration: BoxDecoration(color: c.withOpacity(0.18), borderRadius: BorderRadius.circular(20)),
                         child: Text(statusLabel(s), style: TextStyle(color: c, fontWeight: FontWeight.w600, fontSize: 11.5))),
                     const Spacer(),
-                    if (t.waiter != null) Text(t.waiter!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+                    if (s != 'disponible' && t.waiter != null) Text(t.waiter!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
                     if (total > 0) Text('Cuenta: ${usd(total)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600)),
                     if (store.kitchenStateTable(t.number) == 'listo') Text('🔔 LISTO', style: TextStyle(fontSize: 11, color: Colors.green.shade700, fontWeight: FontWeight.bold))
                     else if (store.kitchenStateTable(t.number) == 'cocina') Text('En cocina...', style: TextStyle(fontSize: 11, color: Colors.blue.shade700)),
@@ -1584,6 +1591,10 @@ class _AdminScreenState extends State<AdminScreen> {
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CancellationsScreen())),
           icon: const Icon(Icons.money_off), label: const Text('Anulaciones / Perdidas'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmployeesScreen())),
+          icon: const Icon(Icons.badge), label: const Text('Trabajadores'))),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -2198,6 +2209,172 @@ class CancellationsScreen extends StatelessWidget {
             )),
         ]);
       }),
+    );
+  }
+}
+
+// ======================= TRABAJADORES =======================
+class Employee {
+  String id;
+  String name;
+  String cedula;
+  String birthdate;
+  String phone;
+  String address;
+  String position;
+  String schedule;
+  double salary;
+  double deductions;
+  String notes;
+  bool active;
+  Employee({required this.id, this.name = '', this.cedula = '', this.birthdate = '', this.phone = '',
+      this.address = '', this.position = '', this.schedule = '', this.salary = 0, this.deductions = 0,
+      this.notes = '', this.active = true});
+  factory Employee.fromRow(Map<String, dynamic> r) => Employee(
+        id: r['id'] as String,
+        name: (r['name'] ?? '') as String,
+        cedula: (r['cedula'] ?? '') as String,
+        birthdate: (r['birthdate'] ?? '') as String,
+        phone: (r['phone'] ?? '') as String,
+        address: (r['address'] ?? '') as String,
+        position: (r['position'] ?? '') as String,
+        schedule: (r['schedule'] ?? '') as String,
+        salary: ((r['salary'] ?? 0) as num).toDouble(),
+        deductions: ((r['deductions'] ?? 0) as num).toDouble(),
+        notes: (r['notes'] ?? '') as String,
+        active: (r['active'] ?? true) as bool,
+      );
+  Map<String, dynamic> toRow() => <String, dynamic>{
+        'name': name, 'cedula': cedula, 'birthdate': birthdate, 'phone': phone, 'address': address,
+        'position': position, 'schedule': schedule, 'salary': salary, 'deductions': deductions,
+        'notes': notes, 'active': active,
+      };
+}
+
+class EmployeesScreen extends StatelessWidget {
+  const EmployeesScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Trabajadores')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmployeeForm())),
+        icon: const Icon(Icons.person_add), label: const Text('Nuevo')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final list = store.employees;
+        if (list.isEmpty) {
+          return const Center(child: Padding(padding: EdgeInsets.all(24),
+            child: Text('Aun no hay trabajadores.\nToca "Nuevo" para agregar.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey))));
+        }
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          for (final e in list)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
+              leading: CircleAvatar(backgroundColor: e.active ? Colors.teal.shade100 : Colors.grey.shade300,
+                child: Icon(Icons.person, color: e.active ? Colors.teal : Colors.grey)),
+              title: Text(e.name.isEmpty ? '(sin nombre)' : e.name),
+              subtitle: Text([if (e.position.isNotEmpty) e.position, if (e.schedule.isNotEmpty) e.schedule, if (!e.active) 'Inactivo'].join(' · '), style: const TextStyle(fontSize: 12)),
+              trailing: e.salary > 0 ? Text('Sueldo: ' + fmtQty(e.salary), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)) : null,
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EmployeeForm(existing: e))),
+            )),
+        ]);
+      }),
+    );
+  }
+}
+
+class EmployeeForm extends StatefulWidget {
+  final Employee? existing;
+  const EmployeeForm({super.key, this.existing});
+  @override
+  State<EmployeeForm> createState() => _EmployeeFormState();
+}
+class _EmployeeFormState extends State<EmployeeForm> {
+  late TextEditingController _name, _cedula, _birth, _phone, _address, _position, _schedule, _salary, _deductions, _notes;
+  bool _active = true;
+  bool _saving = false;
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _name = TextEditingController(text: e?.name ?? '');
+    _cedula = TextEditingController(text: e?.cedula ?? '');
+    _birth = TextEditingController(text: e?.birthdate ?? '');
+    _phone = TextEditingController(text: e?.phone ?? '');
+    _address = TextEditingController(text: e?.address ?? '');
+    _position = TextEditingController(text: e?.position ?? '');
+    _schedule = TextEditingController(text: e?.schedule ?? '');
+    _salary = TextEditingController(text: e != null && e.salary > 0 ? fmtQty(e.salary) : '');
+    _deductions = TextEditingController(text: e != null && e.deductions > 0 ? fmtQty(e.deductions) : '');
+    _notes = TextEditingController(text: e?.notes ?? '');
+    _active = e?.active ?? true;
+  }
+  @override
+  void dispose() {
+    for (final c in [_name, _cedula, _birth, _phone, _address, _position, _schedule, _salary, _deductions, _notes]) { c.dispose(); }
+    super.dispose();
+  }
+  Future<void> _save() async {
+    if (_saving) return;
+    if (_name.text.trim().isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
+    setState(() => _saving = true);
+    final e = widget.existing ?? Employee(id: '');
+    e.name = _name.text.trim();
+    e.cedula = _cedula.text.trim();
+    e.birthdate = _birth.text.trim();
+    e.phone = _phone.text.trim();
+    e.address = _address.text.trim();
+    e.position = _position.text.trim();
+    e.schedule = _schedule.text.trim();
+    e.salary = double.tryParse(_salary.text.replaceAll(',', '.')) ?? 0;
+    e.deductions = double.tryParse(_deductions.text.replaceAll(',', '.')) ?? 0;
+    e.notes = _notes.text.trim();
+    e.active = _active;
+    if (widget.existing != null) { await store.updateEmployee(e); } else { await store.addEmployee(e); }
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+  Widget _field(TextEditingController c, String label, {int lines = 1, bool number = false}) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: TextField(controller: c, maxLines: lines,
+          keyboardType: number ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+          decoration: InputDecoration(labelText: label, border: const OutlineInputBorder())),
+      );
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.existing == null ? 'Nuevo trabajador' : 'Editar trabajador'), actions: [
+        if (widget.existing != null)
+          IconButton(icon: const Icon(Icons.delete), onPressed: () {
+            showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+              title: const Text('Eliminar trabajador'),
+              content: Text('Eliminar a "' + widget.existing!.name + '"?'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+                FilledButton(onPressed: () async { Navigator.pop(dctx); await store.deleteEmployee(widget.existing!); if (mounted) Navigator.pop(context); }, child: const Text('Eliminar')),
+              ]));
+          }),
+      ]),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        _field(_name, 'Nombre completo'),
+        _field(_cedula, 'Cedula / documento'),
+        _field(_birth, 'Fecha de nacimiento (DD/MM/AAAA)'),
+        _field(_phone, 'Telefono'),
+        _field(_address, 'Lugar de residencia'),
+        _field(_position, 'Cargo'),
+        _field(_schedule, 'Horario de trabajo'),
+        Row(children: [
+          Expanded(child: _field(_salary, 'Sueldo', number: true)),
+          const SizedBox(width: 12),
+          Expanded(child: _field(_deductions, 'Descuentos', number: true)),
+        ]),
+        _field(_notes, 'Curriculum / informacion adicional', lines: 4),
+        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Activo'), value: _active, onChanged: (v) => setState(() => _active = v)),
+        const SizedBox(height: 16),
+        SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
+          label: Text(_saving ? 'Guardando...' : 'Guardar trabajador'))),
+      ]),
     );
   }
 }
