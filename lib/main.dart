@@ -422,6 +422,11 @@ class Store extends ChangeNotifier {
     }
     return -1;
   }
+  List<Product> lowAvailabilityProducts({int threshold = 5}) {
+    final res = products.where((p) { final m = maxMakeable(p); return m >= 0 && m <= threshold; }).toList();
+    res.sort((a, b) => maxMakeable(a).compareTo(maxMakeable(b)));
+    return res;
+  }
   Future<void> _consume(Product p, double q) async {
     if (p.comboItems.isNotEmpty) {
       for (final c in p.comboItems) {
@@ -880,6 +885,7 @@ class TablesScreen extends StatelessWidget {
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         if (store.tables.isEmpty) return const Center(child: CircularProgressIndicator());
         return Column(children: [
+          lowStockWaiterBanner(),
           if (store.takeaways.isNotEmpty) _takeawaySection(context),
           Expanded(child: LayoutBuilder(builder: (context, cns) {
           final cols = (cns.maxWidth / 180).floor().clamp(2, 6).toInt();
@@ -1110,6 +1116,7 @@ class _OrderScreenState extends State<OrderScreen> {
         final total = store.cartTotalUsd(widget.cartKey);
         final prods = store.products.where((p) => p.cat == _cat).toList();
         return Column(children: [
+          lowStockWaiterBanner(),
           SizedBox(height: 52, child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 10), children: [
             for (final c in Cat.values) Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Center(child: ChoiceChip(label: Text(catLabel(c)), selected: c == _cat, onSelected: (_) => setState(() => _cat = c)))),
@@ -2546,4 +2553,29 @@ class _UserFormState extends State<UserForm> {
       ]),
     );
   }
+}
+
+
+// ======================= AVISO DE DISPONIBILIDAD (mesero) =======================
+Widget lowStockWaiterBanner() {
+  final low = store.lowAvailabilityProducts();
+  if (low.isEmpty) return const SizedBox.shrink();
+  return Container(
+    width: double.infinity,
+    color: const Color(0xFFFFF3E0),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Row(children: [
+        Icon(Icons.warning_amber, color: Color(0xFFEF6C00), size: 18),
+        SizedBox(width: 6),
+        Expanded(child: Text('Por agotarse - ofrece alternativas o sugiere cambiar un ingrediente',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFE65100), fontSize: 12.5))),
+      ]),
+      const SizedBox(height: 4),
+      for (final p in low.take(6))
+        Text('- ' + p.name + ': ' + (store.maxMakeable(p) == 0 ? 'AGOTADO' : 'quedan ~' + store.maxMakeable(p).toString()),
+            style: TextStyle(fontSize: 12, color: store.maxMakeable(p) == 0 ? Colors.red : const Color(0xFFBF360C))),
+      if (low.length > 6) Text('... y ' + (low.length - 6).toString() + ' mas', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+    ]),
+  );
 }
