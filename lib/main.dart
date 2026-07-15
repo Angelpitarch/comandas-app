@@ -300,6 +300,9 @@ class Store extends ChangeNotifier {
   Future<void> freeTable(int n) async {
     try { await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', n); } catch (e) { _onErr(e); }
   }
+  Future<void> markDelivered(int table) async {
+    try { await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada'); } catch (e) { _onErr(e); }
+  }
   Future<void> transferTable(int from, int to) async {
     try {
       await sb.from('account_items').update(<String, dynamic>{'table_number': to}).eq('table_number', from);
@@ -350,9 +353,6 @@ class Store extends ChangeNotifier {
       }
       return;
     }
-    if (p.trackStock) {
-      await sb.rpc('deduct_stock', params: <String, dynamic>{'p_id': p.id, 'p_qty': q});
-    }
   }
 
   int _nextTicketNumber() {
@@ -365,11 +365,11 @@ class Store extends ChangeNotifier {
     final t = tables.where((e) => e.number == n).toList();
     final st = t.isEmpty ? 'disponible' : t.first.status;
     if (st == 'pagada') return 'pagada';
+    if (account(n).isEmpty) return 'disponible';
     final tk = tickets.where((x) => x.table == n && x.status != 'anulada' && x.status != 'entregada').toList();
     if (tk.any((x) => x.status == 'lista')) return 'listo';
     if (tk.isNotEmpty) return 'cocina';
-    if (account(n).isNotEmpty) return 'servido';
-    return 'disponible';
+    return 'servido';
   }
 
   Future<void> setRate(double r) async {
@@ -464,7 +464,6 @@ class Store extends ChangeNotifier {
       if (table != null) {
         await sb.from('account_items').delete().eq('table_number', table);
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'pagada'}).eq('number', table);
-        await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada');
       } else {
         cart(cartKey ?? '').clear();
       }
@@ -894,15 +893,18 @@ class _OrderScreenState extends State<OrderScreen> {
                   itemCount: prods.length,
                   itemBuilder: (context, i) {
                     final p = prods[i];
-                    return Card(child: InkWell(onTap: p.available ? () => _addOrEdit(p) : null,
-                      child: Opacity(opacity: p.available ? 1 : 0.4, child: Padding(padding: const EdgeInsets.all(8),
+                    final mk = store.maxMakeable(p);
+                    final disponible = p.available && mk != 0;
+                    return Card(child: InkWell(onTap: disponible ? () => _addOrEdit(p) : null,
+                      child: Opacity(opacity: disponible ? 1 : 0.4, child: Padding(padding: const EdgeInsets.all(8),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                           Center(child: Text(p.emoji, style: const TextStyle(fontSize: 38))),
                           const Spacer(),
                           Text(p.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, height: 1.1, fontSize: 13)),
                           const SizedBox(height: 3),
                           Text(dualPrice(p.price, p.cur), style: const TextStyle(fontSize: 10.5)),
-                          if (p.trackStock) Text('Quedan ' + p.stock.toStringAsFixed(0), style: TextStyle(fontSize: 10, color: p.stock <= p.minStock ? Colors.red : Colors.grey[600])),
+                          if (mk > 0) Text('Alcanza ~' + mk.toString(), style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+                          if (mk == 0) const Text('Sin ingredientes', style: TextStyle(color: Colors.red, fontSize: 10)),
                           if (!p.available) const Text('No disponible', style: TextStyle(color: Colors.red, fontSize: 10)),
                         ])))));
                   })),
@@ -1092,11 +1094,22 @@ class _PaymentScreenState extends State<PaymentScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo cobrar. Revisa la conexion.')));
       return;
     }
-    await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
-      icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
-      title: const Text('Cobro registrado'),
-      content: Text(widget.table != null ? 'Mesa ${widget.table}: cuenta PAGADA.\nLibera la mesa cuando el cliente se retire.' : 'Pedido para llevar cobrado.'),
-      actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Listo'))]));
+    if (widget.table != null) {
+      await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+        icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
+        title: Text('Mesa ${widget.table}: cuenta PAGADA'),
+        content: const Text('El pedido, ya esta entregado o queda en espera?'),
+        actions: [
+          OutlinedButton(onPressed: () => Navigator.pop(dctx), child: const Text('Pagado y en espera')),
+          FilledButton(onPressed: () async { await store.markDelivered(widget.table!); if (dctx.mounted) Navigator.pop(dctx); }, child: const Text('Pagado y entregado')),
+        ]));
+    } else {
+      await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+        icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
+        title: const Text('Cobro registrado'),
+        content: const Text('Pedido para llevar cobrado.'),
+        actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Listo'))]));
+    }
     if (!mounted) return;
     nav.pop();
   }
@@ -1445,12 +1458,12 @@ class _ProductFormState extends State<ProductForm> {
     if (e != null) {
       e.name = name; e.emoji = emoji; e.cat = _cat; e.price = price; e.cur = _cur;
       e.available = _available; e.sizes = sizes; e.extras = extras; e.quita = quita;
-      e.stock = stock; e.minStock = minStock; e.trackStock = _track;
+      e.stock = 0; e.minStock = 0; e.trackStock = false;
       e.recipe = _cat == Cat.combos ? <RecipeItem>[] : recipe;
       e.comboItems = _cat == Cat.combos ? comboItems : <ComboItem>[];
       await store.updateProduct(e);
     } else {
-      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: stock, minStock: minStock, trackStock: _track, recipe: _cat == Cat.combos ? <RecipeItem>[] : recipe, comboItems: _cat == Cat.combos ? comboItems : <ComboItem>[]));
+      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: 0, minStock: 0, trackStock: false, recipe: _cat == Cat.combos ? <RecipeItem>[] : recipe, comboItems: _cat == Cat.combos ? comboItems : <ComboItem>[]));
     }
     if (!mounted) return;
     Navigator.pop(context);
@@ -1496,12 +1509,6 @@ class _ProductFormState extends State<ProductForm> {
         const SizedBox(height: 6),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Disponible'), value: _available, onChanged: (v) => setState(() => _available = v)),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Usar tamanos (Pequena/Mediana/Grande)'), value: _useSizes, onChanged: (v) => setState(() => _useSizes = v)),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Controlar inventario'), subtitle: const Text('Descuenta del stock al vender y avisa cuando esta por agotarse'), value: _track, onChanged: (v) => setState(() => _track = v)),
-        if (_track) Padding(padding: const EdgeInsets.only(bottom: 6), child: Row(children: [
-          Expanded(child: TextField(controller: _stock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock actual', isDense: true, border: OutlineInputBorder()))),
-          const SizedBox(width: 12),
-          Expanded(child: TextField(controller: _minStock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock minimo (alerta)', isDense: true, border: OutlineInputBorder()))),
-        ])),
         const SizedBox(height: 6),
         TextField(controller: _quita, decoration: const InputDecoration(labelText: 'Ingredientes que se pueden quitar (separados por coma)', hintText: 'Cebolla, Tomate, Salsas', border: OutlineInputBorder())),
         const SizedBox(height: 16),
