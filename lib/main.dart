@@ -167,8 +167,10 @@ class Ticket {
   final String? note;
   final bool adicion;
   final bool reprinted;
+  final String? takeawayId;
+  final String? takeawayName;
   Ticket(this.id, this.number, this.table, this.waiter, this.sentAt, this.status, this.lines,
-      {this.note, this.adicion = false, this.reprinted = false});
+      {this.note, this.adicion = false, this.reprinted = false, this.takeawayId, this.takeawayName});
   factory Ticket.fromRow(Map<String, dynamic> r) => Ticket(
         r['id'] as String,
         ((r['number'] ?? 0) as num).toInt(),
@@ -180,12 +182,15 @@ class Ticket {
         note: r['note'] as String?,
         adicion: (r['adicion'] ?? false) as bool,
         reprinted: (r['reprinted'] ?? false) as bool,
+        takeawayId: r['takeaway_id'] as String?,
+        takeawayName: r['takeaway_name'] as String?,
       );
 }
 
 class AccLine {
   final String id;
-  final int table;
+  final int? table;
+  final String? takeawayId;
   final String name;
   final int qty;
   final String? size;
@@ -193,10 +198,11 @@ class AccLine {
   final List<String> quita;
   final String? note;
   final double unitUsd;
-  AccLine(this.id, this.table, this.name, this.qty, this.size, this.extras, this.quita, this.note, this.unitUsd);
+  AccLine(this.id, this.table, this.takeawayId, this.name, this.qty, this.size, this.extras, this.quita, this.note, this.unitUsd);
   factory AccLine.fromRow(Map<String, dynamic> r) => AccLine(
         r['id'] as String,
-        (r['table_number'] as num).toInt(),
+        r['table_number'] != null ? (r['table_number'] as num).toInt() : null,
+        r['takeaway_id'] as String?,
         (r['product_name'] ?? '') as String,
         ((r['qty'] ?? 1) as num).toInt(),
         r['size'] as String?,
@@ -245,6 +251,8 @@ class Store extends ChangeNotifier {
   List<TableModel> tables = [];
   List<Ticket> tickets = [];
   Map<int, List<AccLine>> accounts = {};
+  List<Takeaway> takeaways = [];
+  Map<String, List<AccLine>> takeawayAccounts = {};
   List<Sale> sales = [];
   List<Ingredient> ingredients = [];
   final List<String> methods = ['Efectivo Bs', 'Efectivo USD', 'Pago movil', 'Tarjeta'];
@@ -267,8 +275,16 @@ class Store extends ChangeNotifier {
     }, onError: _onErr);
     sb.from('account_items').stream(primaryKey: ['id']).listen((rows) {
       final m = <int, List<AccLine>>{};
-      for (final r in rows) { final a = AccLine.fromRow(r); (m[a.table] ??= []).add(a); }
-      accounts = m; notifyListeners();
+      final tm = <String, List<AccLine>>{};
+      for (final r in rows) {
+        final a = AccLine.fromRow(r);
+        if (a.table != null) { (m[a.table!] ??= []).add(a); }
+        else if (a.takeawayId != null) { (tm[a.takeawayId!] ??= []).add(a); }
+      }
+      accounts = m; takeawayAccounts = tm; notifyListeners();
+    }, onError: _onErr);
+    sb.from('takeaways').stream(primaryKey: ['id']).order('created_at').listen((rows) {
+      takeaways = rows.map((r) => Takeaway.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
@@ -302,6 +318,25 @@ class Store extends ChangeNotifier {
   }
   Future<void> markDelivered(int table) async {
     try { await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada'); } catch (e) { _onErr(e); }
+  }
+  List<AccLine> takeawayAccount(String id) => takeawayAccounts[id] ?? const [];
+  double takeawayTotalUsd(String id) => takeawayAccount(id).fold(0.0, (s, a) => s + a.lineUsd);
+  List<Ticket> ticketsOfTakeaway(String id) => tickets.where((x) => x.takeawayId == id && x.status != 'anulada').toList();
+  Future<String?> createTakeaway(String name) async {
+    try {
+      final res = await sb.from('takeaways').insert(<String, dynamic>{'name': name, 'status': 'abierta'}).select();
+      if (res.isNotEmpty) return res.first['id'] as String;
+    } catch (e) { _onErr(e); }
+    return null;
+  }
+  Future<void> markDeliveredTakeaway(String id) async {
+    try { await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('takeaway_id', id).neq('status', 'anulada'); } catch (e) { _onErr(e); }
+  }
+  Future<void> closeTakeaway(String id) async {
+    try {
+      await sb.from('account_items').delete().eq('takeaway_id', id);
+      await sb.from('takeaways').delete().eq('id', id);
+    } catch (e) { _onErr(e); }
   }
   Future<void> transferTable(int from, int to) async {
     try {
@@ -400,26 +435,29 @@ class Store extends ChangeNotifier {
     } catch (e) { _onErr(e); }
   }
 
-  Future<int?> send(String key, {int? table, String? note, bool keepCart = false}) async {
+  Future<int?> send(String key, {int? table, String? takeawayId, String? takeawayName, String? note, bool keepCart = false}) async {
     final items = cart(key);
     if (items.isEmpty) return null;
     final number = _nextTicketNumber();
-    final adicion = table != null && tickets.any((t) => t.table == table && t.status != 'anulada');
+    final adicion = (table != null && tickets.any((t) => t.table == table && t.status != 'anulada')) ||
+        (takeawayId != null && tickets.any((t) => t.takeawayId == takeawayId && t.status != 'anulada'));
     List<String> exNames(CartItem it) => [for (final e in it.p.extras) if (it.extras.contains(e.id)) e.name];
     final lines = [for (final it in items) <String, dynamic>{
       'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note,
     }];
     try {
       await sb.from('tickets').insert(<String, dynamic>{
-        'number': number, 'table_number': table, 'waiter': currentUser,
+        'number': number, 'table_number': table, 'takeaway_id': takeawayId, 'takeaway_name': takeawayName, 'waiter': currentUser,
         'status': 'nueva', 'adicion': adicion, 'note': note, 'lines': lines,
       });
-      if (table != null) {
+      if (table != null || takeawayId != null) {
         final accRows = [for (final it in items) <String, dynamic>{
-          'table_number': table, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
+          'table_number': table, 'takeaway_id': takeawayId, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
           'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note, 'unit_usd': toUsd(it.unit(), it.p.cur),
         }];
         await sb.from('account_items').insert(accRows);
+      }
+      if (table != null) {
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada', 'waiter': currentUser, 'opened_at': DateTime.now().toIso8601String()}).eq('number', table);
       }
       for (final it in items) {
@@ -442,15 +480,23 @@ class Store extends ChangeNotifier {
     try { await sb.from('tickets').update(<String, dynamic>{'reprinted': true}).eq('id', t.id); } catch (e) { _onErr(e); }
   }
 
-  Future<bool> pay(List<Payment> payments, {int? table, String? cartKey}) async {
+  Future<bool> pay(List<Payment> payments, {int? table, String? takeawayId, String? cartKey}) async {
     try {
       List<Map<String, dynamic>> saleLines;
       double total;
+      String? customer;
       if (table != null) {
         final acc = account(table);
         if (acc.isEmpty) return false;
         saleLines = [for (final a in acc) <String, dynamic>{'name': a.name, 'qty': a.qty, 'lineUsd': a.lineUsd}];
         total = acc.fold(0.0, (s, a) => s + a.lineUsd);
+      } else if (takeawayId != null) {
+        final acc = takeawayAccount(takeawayId);
+        if (acc.isEmpty) return false;
+        saleLines = [for (final a in acc) <String, dynamic>{'name': a.name, 'qty': a.qty, 'lineUsd': a.lineUsd}];
+        total = acc.fold(0.0, (s, a) => s + a.lineUsd);
+        final tk = takeaways.where((t) => t.id == takeawayId).toList();
+        customer = tk.isNotEmpty ? tk.first.name : null;
       } else {
         final items = cart(cartKey ?? '');
         if (items.isEmpty) return false;
@@ -458,12 +504,15 @@ class Store extends ChangeNotifier {
         total = items.fold(0.0, (s, it) => s + lineUsd(it));
       }
       await sb.from('sales').insert(<String, dynamic>{
-        'table_number': table, 'total_usd': total, 'lines': saleLines,
+        'table_number': table, 'customer': customer, 'total_usd': total, 'lines': saleLines,
         'payments': [for (final p in payments) <String, dynamic>{'method': p.method, 'amountUsd': p.amountUsd, 'reference': p.reference}],
       });
       if (table != null) {
         await sb.from('account_items').delete().eq('table_number', table);
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'pagada'}).eq('number', table);
+      } else if (takeawayId != null) {
+        await sb.from('account_items').delete().eq('takeaway_id', takeawayId);
+        await sb.from('takeaways').update(<String, dynamic>{'status': 'pagada'}).eq('id', takeawayId);
       } else {
         cart(cartKey ?? '').clear();
       }
@@ -670,17 +719,72 @@ class ProfileScreen extends StatelessWidget {
 // ======================= MESAS =======================
 class TablesScreen extends StatelessWidget {
   const TablesScreen({super.key});
+
+  void _nuevoLlevar(BuildContext context) {
+    final ctrl = TextEditingController();
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text('Nuevo pedido para llevar'),
+      content: TextField(controller: ctrl, autofocus: true,
+        decoration: const InputDecoration(labelText: 'Nombre del cliente', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+        FilledButton(onPressed: () async {
+          final name = ctrl.text.trim().isEmpty ? 'Cliente' : ctrl.text.trim();
+          Navigator.pop(dctx);
+          final id = await store.createTakeaway(name);
+          if (id != null && context.mounted) {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => OrderScreen(cartKey: 'llevar-$id', table: null, takeawayId: id, takeawayName: name)));
+          }
+        }, child: const Text('Crear')),
+      ],
+    ));
+  }
+
+  Widget _takeawaySection(BuildContext context) {
+    return SizedBox(
+      height: 118,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Padding(padding: EdgeInsets.fromLTRB(14, 8, 14, 4), child: Text('Para llevar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+        Expanded(child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 10), children: [
+          for (final t in store.takeaways) _takeawayCard(context, t),
+        ])),
+      ]),
+    );
+  }
+
+  Widget _takeawayCard(BuildContext context, Takeaway t) {
+    final total = store.takeawayTotalUsd(t.id);
+    final pagada = t.status == 'pagada';
+    final c = pagada ? const Color(0xFF8D6E63) : const Color(0xFF00897B);
+    return SizedBox(width: 150, child: Card(child: InkWell(
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => TakeawayDetailScreen(id: t.id, name: t.name))),
+      child: Container(
+        decoration: BoxDecoration(border: Border(top: BorderSide(color: c, width: 5))),
+        padding: const EdgeInsets.all(8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [const Icon(Icons.takeout_dining, size: 16), const SizedBox(width: 4),
+            Expanded(child: Text(t.name.isEmpty ? 'Cliente' : t.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)))]),
+          const Spacer(),
+          Text(pagada ? 'PAGADO' : 'Abierto', style: TextStyle(color: c, fontWeight: FontWeight.w600, fontSize: 11)),
+          if (total > 0) Text('Cuenta: ${usd(total)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+        ]),
+      ),
+    )));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Mesas')),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const OrderScreen(cartKey: 'llevar', table: null))),
+        onPressed: () => _nuevoLlevar(context),
         icon: const Icon(Icons.takeout_dining), label: const Text('Para llevar'),
       ),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         if (store.tables.isEmpty) return const Center(child: CircularProgressIndicator());
-        return LayoutBuilder(builder: (context, cns) {
+        return Column(children: [
+          if (store.takeaways.isNotEmpty) _takeawaySection(context),
+          Expanded(child: LayoutBuilder(builder: (context, cns) {
           final cols = (cns.maxWidth / 180).floor().clamp(2, 6).toInt();
           return GridView.builder(
             padding: const EdgeInsets.all(14),
@@ -715,7 +819,8 @@ class TablesScreen extends StatelessWidget {
               ));
             },
           );
-        });
+        })),
+        ]);
       }),
     );
   }
@@ -826,7 +931,9 @@ String _kLabel(String s) => switch (s) {
 class OrderScreen extends StatefulWidget {
   final String cartKey;
   final int? table;
-  const OrderScreen({super.key, required this.cartKey, required this.table});
+  final String? takeawayId;
+  final String? takeawayName;
+  const OrderScreen({super.key, required this.cartKey, required this.table, this.takeawayId, this.takeawayName});
   @override
   State<OrderScreen> createState() => _OrderScreenState();
 }
@@ -851,29 +958,25 @@ class _OrderScreenState extends State<OrderScreen> {
     if (_sending || store.cart(widget.cartKey).isEmpty) return;
     setState(() => _sending = true);
     final note = _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim();
-    final number = await store.send(widget.cartKey, table: widget.table, note: note, keepCart: widget.table == null);
+    final number = await store.send(widget.cartKey, table: widget.table, takeawayId: widget.takeawayId, takeawayName: widget.takeawayName, note: note);
     if (!mounted) return;
-    setState(() { _sending = false; if (widget.table == null) _sentTakeaway = true; });
+    setState(() => _sending = false);
     _noteCtrl.clear();
     if (number == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo enviar. Revisa la conexion.')));
       return;
     }
-    if (widget.table != null) {
-      await showDialog<void>(context: context, builder: (_) => AlertDialog(
-        icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
-        title: Text('Comanda #${number.toString().padLeft(6, '0')}'),
-        content: const Text('Comanda enviada a cocina.'),
-        actions: [FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Entendido'))]));
-      if (mounted) Navigator.pop(context);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enviado a cocina')));
-    }
+    await showDialog<void>(context: context, builder: (_) => AlertDialog(
+      icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
+      title: Text('Comanda #${number.toString().padLeft(6, '0')}'),
+      content: const Text('Comanda enviada a cocina.'),
+      actions: [FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Entendido'))]));
+    if (mounted) Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    final title = widget.table != null ? 'Agregar - Mesa ${widget.table}' : 'Para llevar';
+    final title = widget.table != null ? 'Agregar - Mesa ${widget.table}' : (widget.takeawayName != null ? 'Llevar - ${widget.takeawayName}' : 'Para llevar');
     return Scaffold(
       appBar: AppBar(title: Text(title)),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
@@ -928,7 +1031,7 @@ class _OrderScreenState extends State<OrderScreen> {
               const SizedBox(height: 10),
               Row(children: [const Text('Total', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), Text(dualUsd(total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))]),
               const SizedBox(height: 8),
-              if (widget.table != null)
+              if (widget.table != null || widget.takeawayId != null)
                 SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
                   onPressed: (items.isEmpty || _sending) ? null : _send,
                   icon: _sending ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.send),
@@ -1043,8 +1146,9 @@ class _Line {
 
 class PaymentScreen extends StatefulWidget {
   final int? table;
+  final String? takeawayId;
   final String? cartKey;
-  const PaymentScreen({super.key, this.table, this.cartKey});
+  const PaymentScreen({super.key, this.table, this.takeawayId, this.cartKey});
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
@@ -1061,7 +1165,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   List<_Line> get _lines => widget.table != null
       ? store.account(widget.table!).map((a) => _Line(a.name, a.qty, a.lineUsd)).toList()
-      : store.cart(widget.cartKey ?? '').map((it) => _Line(it.p.name, it.qty, store.lineUsd(it))).toList();
+      : widget.takeawayId != null
+          ? store.takeawayAccount(widget.takeawayId!).map((a) => _Line(a.name, a.qty, a.lineUsd)).toList()
+          : store.cart(widget.cartKey ?? '').map((it) => _Line(it.p.name, it.qty, store.lineUsd(it))).toList();
   double get _totalUsd => _lines.fold(0.0, (s, l) => s + l.lineUsd);
 
   List<double> _parts() {
@@ -1087,7 +1193,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
     if (payments.isEmpty) return;
     setState(() => _paying = true);
     final nav = Navigator.of(context);
-    final ok = await store.pay(payments, table: widget.table, cartKey: widget.cartKey);
+    final ok = await store.pay(payments, table: widget.table, takeawayId: widget.takeawayId, cartKey: widget.cartKey);
     if (!mounted) return;
     setState(() => _paying = false);
     if (!ok) {
@@ -1279,7 +1385,7 @@ class _KitchenScreenState extends State<KitchenScreen> {
                   Text(_elapsed(t.sentAt), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
                 ])),
                 Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [
-                  Text(t.table != null ? 'MESA ${t.table}' : 'PARA LLEVAR', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  Text(t.table != null ? 'MESA ${t.table}' : (t.takeawayName != null ? 'LLEVAR - ${t.takeawayName}' : 'PARA LLEVAR'), style: const TextStyle(fontWeight: FontWeight.bold)),
                   const Spacer(),
                   if (t.adicion) Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), color: Colors.amber, child: const Text('ADICION', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
                 ])),
@@ -1829,4 +1935,92 @@ class _CRow {
   String? productId;
   final TextEditingController qty;
   _CRow(this.productId, this.qty);
+}
+
+
+// ======================= PARA LLEVAR (modelo) =======================
+class Takeaway {
+  final String id;
+  final String name;
+  final String status;
+  Takeaway(this.id, this.name, this.status);
+  factory Takeaway.fromRow(Map<String, dynamic> r) => Takeaway(
+        r['id'] as String,
+        (r['name'] ?? '') as String,
+        (r['status'] ?? 'abierta') as String,
+      );
+}
+
+
+// ======================= DETALLE PARA LLEVAR =======================
+class TakeawayDetailScreen extends StatelessWidget {
+  final String id;
+  final String name;
+  const TakeawayDetailScreen({super.key, required this.id, required this.name});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Llevar - $name')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final acc = store.takeawayAccount(id);
+        final tk = store.ticketsOfTakeaway(id);
+        final total = store.takeawayTotalUsd(id);
+        final st = store.takeaways.where((t) => t.id == id).map((t) => t.status).toList();
+        final isPaid = st.isNotEmpty && st.first == 'pagada';
+        return Column(children: [
+          Expanded(child: ListView(padding: const EdgeInsets.all(14), children: [
+            if (tk.isNotEmpty) ...[
+              const Text('Estado en cocina', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              for (final k in tk)
+                Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true,
+                  leading: CircleAvatar(backgroundColor: _kColor(k.status).withOpacity(0.18), child: Icon(_kIcon(k.status), color: _kColor(k.status), size: 20)),
+                  title: Text('Comanda #' + k.number.toString().padLeft(6, '0')),
+                  subtitle: Text(k.lines.length.toString() + ' productos - enviada ' + hhmm(k.sentAt)),
+                  trailing: Text(_kLabel(k.status), style: TextStyle(color: _kColor(k.status), fontWeight: FontWeight.w600)))),
+              const SizedBox(height: 12),
+            ],
+            const Text('Lo pedido', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            if (acc.isEmpty)
+              const Padding(padding: EdgeInsets.all(12), child: Text('Aun no hay productos. Toca "Agregar".', style: TextStyle(color: Colors.grey)))
+            else
+              for (final a in acc)
+                Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true,
+                  leading: CircleAvatar(radius: 14, backgroundColor: Colors.orange.shade50, child: Text(a.qty.toString(), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12))),
+                  title: Text(a.name, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                  subtitle: Text([if (a.size != null) a.size!, ...a.extras.map((e) => '+' + e), ...a.quita.map((q) => 'Sin ' + q), if (a.note != null) 'Nota: ' + a.note!].join(' - '), style: const TextStyle(fontSize: 11)),
+                  trailing: Text(usd(a.lineUsd), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)))),
+          ])),
+          Material(elevation: 8, child: SafeArea(top: false, child: Padding(padding: const EdgeInsets.all(12),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Row(children: [const Text('Total', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), Text(dualUsd(total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))]),
+              const SizedBox(height: 10),
+              if (isPaid) ...[
+                const Text('PAGADO. Cierra la casilla cuando entregues el pedido.', style: TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFF66BB6A)),
+                  onPressed: () async { await store.markDeliveredTakeaway(id); await store.closeTakeaway(id); if (context.mounted) Navigator.pop(context); },
+                  icon: const Icon(Icons.check_circle), label: const Text('Entregado y cerrar'))),
+              ] else ...[
+                Row(children: [
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => OrderScreen(cartKey: 'llevar-' + id, table: null, takeawayId: id, takeawayName: name))),
+                    icon: const Icon(Icons.add), label: const Text('Agregar'))),
+                  const SizedBox(width: 8),
+                  Expanded(child: OutlinedButton.icon(
+                    onPressed: () async { await store.closeTakeaway(id); if (context.mounted) Navigator.pop(context); },
+                    icon: const Icon(Icons.delete_outline), label: const Text('Cancelar'))),
+                ]),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+                  onPressed: acc.isEmpty ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => PaymentScreen(takeawayId: id))),
+                  icon: const Icon(Icons.point_of_sale), label: const Text('Cobrar'))),
+              ],
+            ]))))
+        ]);
+      }),
+    );
+  }
 }
