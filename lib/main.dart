@@ -262,6 +262,8 @@ class Store extends ChangeNotifier {
   final List<String> methods = ['Efectivo Bs', 'Efectivo USD', 'Pago movil', 'Tarjeta'];
   final Map<String, List<CartItem>> _carts = {};
   String currentUser = '';
+  String currentUserRole = '';
+  List<AppUser> appUsers = [];
 
   void init() {
     sb.from('app_config').stream(primaryKey: ['id']).listen((rows) {
@@ -295,6 +297,9 @@ class Store extends ChangeNotifier {
     }, onError: _onErr);
     sb.from('employees').stream(primaryKey: ['id']).order('name').listen((rows) {
       employees = rows.map((r) => Employee.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
+    sb.from('app_users').stream(primaryKey: ['id']).order('name').listen((rows) {
+      appUsers = rows.map((r) => AppUser.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
@@ -369,6 +374,18 @@ class Store extends ChangeNotifier {
   Future<void> addEmployee(Employee e) async { try { await sb.from('employees').insert(e.toRow()); } catch (x) { _onErr(x); } }
   Future<void> updateEmployee(Employee e) async { try { await sb.from('employees').update(e.toRow()).eq('id', e.id); } catch (x) { _onErr(x); } }
   Future<void> deleteEmployee(Employee e) async { try { await sb.from('employees').delete().eq('id', e.id); } catch (x) { _onErr(x); } }
+  Future<void> addUser(AppUser u) async { try { await sb.from('app_users').insert(u.toRow()); } catch (x) { _onErr(x); } }
+  Future<void> updateUser(AppUser u) async { try { await sb.from('app_users').update(u.toRow()).eq('id', u.id); } catch (x) { _onErr(x); } }
+  Future<void> deleteUser(AppUser u) async { try { await sb.from('app_users').delete().eq('id', u.id); } catch (x) { _onErr(x); } }
+  AppUser? userByPin(String pin) {
+    for (final u in appUsers) { if (u.pin == pin && u.active) return u; }
+    if (appUsers.isEmpty) {
+      const seed = {'1111': ['Ana (Admin)', 'admin'], '2222': ['Luis (Mesero)', 'mesero'], '3333': ['Cocina', 'cocina']};
+      final f = seed[pin];
+      if (f != null) return AppUser(id: '', name: f[0], pin: pin, role: f[1]);
+    }
+    return null;
+  }
   Future<void> transferTable(int from, int to) async {
     try {
       await sb.from('account_items').update(<String, dynamic>{'table_number': to}).eq('table_number', from);
@@ -609,6 +626,14 @@ String hhmm(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
 const kPrimary = Color(0xFFD84315);
 bool _bromaMostrada = false; // aviso temporal en broma
 
+Widget _homeForRole(String role) =>
+    role == 'admin' ? const AdminScreen() : (role == 'cocina' ? const KitchenScreen() : const TablesScreen());
+void _logout(BuildContext context) {
+  store.currentUser = '';
+  store.currentUserRole = '';
+  Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
+}
+
 class ComandasApp extends StatelessWidget {
   const ComandasApp({super.key});
   @override
@@ -708,9 +733,13 @@ class _LoginScreenState extends State<LoginScreen> {
     if (_pin.length >= 4) return;
     setState(() { _pin += d; _err = null; });
     if (_pin.length == 4) {
-      final name = _users[_pin];
-      if (name == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); }
-      else { store.currentUser = name; Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())); setState(() => _pin = ''); }
+      final u = store.userByPin(_pin);
+      if (u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); }
+      else {
+        store.currentUser = u.name; store.currentUserRole = u.role;
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(u.role)));
+        setState(() => _pin = '');
+      }
     }
   }
   void _back() { if (_pin.isNotEmpty) setState(() => _pin = _pin.substring(0, _pin.length - 1)); }
@@ -843,7 +872,7 @@ class TablesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Mesas')),
+      appBar: AppBar(title: const Text('Mesas'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context))]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _nuevoLlevar(context),
         icon: const Icon(Icons.takeout_dining), label: const Text('Para llevar'),
@@ -1480,7 +1509,7 @@ class _KitchenScreenState extends State<KitchenScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF263238),
-      appBar: AppBar(title: const Text('Cocina - Comandas')),
+      appBar: AppBar(title: const Text('Cocina - Comandas'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context))]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final list = store.tickets.where((t) => t.status != 'entregada' && t.status != 'anulada').toList();
         if (list.length > _lastCount && _lastCount != -1) {
@@ -1558,7 +1587,7 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Administrador')),
+      appBar: AppBar(title: const Text('Administrador'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout), onPressed: () => _logout(context))]),
       body: AnimatedBuilder(animation: store, builder: (context, _) => ListView(padding: const EdgeInsets.all(16), children: [
         const Text('Tasa de cambio (Bs por 1 USD)', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
@@ -1595,6 +1624,16 @@ class _AdminScreenState extends State<AdminScreen> {
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmployeesScreen())),
           icon: const Icon(Icons.badge), label: const Text('Trabajadores'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UsersScreen())),
+          icon: const Icon(Icons.manage_accounts), label: const Text('Usuarios'))),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const TablesScreen())), icon: const Icon(Icons.table_bar), label: const Text('Mesas'))),
+          const SizedBox(width: 8),
+          Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KitchenScreen())), icon: const Icon(Icons.soup_kitchen), label: const Text('Cocina'))),
+        ]),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -2374,6 +2413,136 @@ class _EmployeeFormState extends State<EmployeeForm> {
           onPressed: _saving ? null : _save,
           icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
           label: Text(_saving ? 'Guardando...' : 'Guardar trabajador'))),
+      ]),
+    );
+  }
+}
+
+// ======================= USUARIOS (login/roles) =======================
+class AppUser {
+  String id;
+  String name;
+  String pin;
+  String role;
+  bool active;
+  AppUser({required this.id, this.name = '', this.pin = '', this.role = 'mesero', this.active = true});
+  factory AppUser.fromRow(Map<String, dynamic> r) => AppUser(
+        id: r['id'] as String,
+        name: (r['name'] ?? '') as String,
+        pin: (r['pin'] ?? '') as String,
+        role: (r['role'] ?? 'mesero') as String,
+        active: (r['active'] ?? true) as bool,
+      );
+  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'pin': pin, 'role': role, 'active': active};
+}
+
+String roleLabel(String r) => switch (r) {
+      'admin' => 'Administrador',
+      'cocina' => 'Cocina',
+      _ => 'Mesero / Cajero',
+    };
+
+class UsersScreen extends StatelessWidget {
+  const UsersScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Usuarios')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const UserForm())),
+        icon: const Icon(Icons.person_add), label: const Text('Nuevo')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final list = store.appUsers;
+        if (list.isEmpty) {
+          return const Center(child: Padding(padding: EdgeInsets.all(24),
+            child: Text('Sin usuarios cargados.', style: TextStyle(color: Colors.grey))));
+        }
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          for (final u in list)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
+              leading: CircleAvatar(backgroundColor: u.active ? Colors.indigo.shade100 : Colors.grey.shade300,
+                child: Icon(u.role == 'admin' ? Icons.admin_panel_settings : (u.role == 'cocina' ? Icons.soup_kitchen : Icons.room_service),
+                  color: u.active ? Colors.indigo : Colors.grey)),
+              title: Text(u.name.isEmpty ? '(sin nombre)' : u.name),
+              subtitle: Text(roleLabel(u.role) + '  ·  PIN ' + u.pin + (u.active ? '' : '  ·  inactivo'), style: const TextStyle(fontSize: 12)),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => UserForm(existing: u))),
+            )),
+        ]);
+      }),
+    );
+  }
+}
+
+class UserForm extends StatefulWidget {
+  final AppUser? existing;
+  const UserForm({super.key, this.existing});
+  @override
+  State<UserForm> createState() => _UserFormState();
+}
+class _UserFormState extends State<UserForm> {
+  late TextEditingController _name, _pin;
+  late String _role;
+  bool _active = true;
+  bool _saving = false;
+  @override
+  void initState() {
+    super.initState();
+    final u = widget.existing;
+    _name = TextEditingController(text: u?.name ?? '');
+    _pin = TextEditingController(text: u?.pin ?? '');
+    _role = u?.role ?? 'mesero';
+    _active = u?.active ?? true;
+  }
+  @override
+  void dispose() { _name.dispose(); _pin.dispose(); super.dispose(); }
+  Future<void> _save() async {
+    if (_saving) return;
+    final name = _name.text.trim();
+    final pin = _pin.text.trim();
+    if (name.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
+    if (pin.length != 4 || int.tryParse(pin) == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 4 numeros'))); return; }
+    setState(() => _saving = true);
+    final u = widget.existing ?? AppUser(id: '');
+    u.name = name; u.pin = pin; u.role = _role; u.active = _active;
+    if (widget.existing != null) { await store.updateUser(u); } else { await store.addUser(u); }
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.existing == null ? 'Nuevo usuario' : 'Editar usuario'), actions: [
+        if (widget.existing != null)
+          IconButton(icon: const Icon(Icons.delete), onPressed: () {
+            showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+              title: const Text('Eliminar usuario'),
+              content: Text('Eliminar a "' + widget.existing!.name + '"?'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+                FilledButton(onPressed: () async { Navigator.pop(dctx); await store.deleteUser(widget.existing!); if (mounted) Navigator.pop(context); }, child: const Text('Eliminar')),
+              ]));
+          }),
+      ]),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: _pin, keyboardType: TextInputType.number, maxLength: 4,
+          decoration: const InputDecoration(labelText: 'PIN (4 numeros)', border: OutlineInputBorder(), counterText: '')),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(value: _role,
+          decoration: const InputDecoration(labelText: 'Rol', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'admin', child: Text('Administrador')),
+            DropdownMenuItem(value: 'mesero', child: Text('Mesero / Cajero')),
+            DropdownMenuItem(value: 'cocina', child: Text('Cocina')),
+          ],
+          onChanged: (v) => setState(() => _role = v ?? 'mesero')),
+        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Activo'), value: _active, onChanged: (v) => setState(() => _active = v)),
+        const SizedBox(height: 16),
+        SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
+          label: Text(_saving ? 'Guardando...' : 'Guardar usuario'))),
       ]),
     );
   }
