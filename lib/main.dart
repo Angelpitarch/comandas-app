@@ -314,7 +314,13 @@ class Store extends ChangeNotifier {
   Future<void> updateIngredient(Ingredient i) async { try { await sb.from('ingredients').update(i.toRow()).eq('id', i.id); } catch (e) { _onErr(e); } }
   Future<void> deleteIngredient(Ingredient i) async { try { await sb.from('ingredients').delete().eq('id', i.id); } catch (e) { _onErr(e); } }
   Future<void> freeTable(int n) async {
-    try { await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', n); } catch (e) { _onErr(e); }
+    try {
+      await sb.from('account_items').delete().eq('table_number', n);
+      await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null}).eq('number', n);
+    } catch (e) { _onErr(e); }
+  }
+  Future<void> setTableStatus(int n, String status) async {
+    try { await sb.from('dining_tables').update(<String, dynamic>{'status': status}).eq('number', n); } catch (e) { _onErr(e); }
   }
   Future<void> markDelivered(int table) async {
     try { await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada'); } catch (e) { _onErr(e); }
@@ -399,7 +405,8 @@ class Store extends ChangeNotifier {
   String tableStatus(int n) {
     final t = tables.where((e) => e.number == n).toList();
     final st = t.isEmpty ? 'disponible' : t.first.status;
-    if (st == 'pagada') return 'pagada';
+    if (st == 'pago_espera') return 'pago_espera';
+    if (st == 'pago_servido' || st == 'pagada') return 'pago_servido';
     if (account(n).isEmpty) return 'disponible';
     final tk = tickets.where((x) => x.table == n && x.status != 'anulada' && x.status != 'entregada').toList();
     if (tk.any((x) => x.status == 'lista')) return 'listo';
@@ -508,10 +515,8 @@ class Store extends ChangeNotifier {
         'payments': [for (final p in payments) <String, dynamic>{'method': p.method, 'amountUsd': p.amountUsd, 'reference': p.reference}],
       });
       if (table != null) {
-        await sb.from('account_items').delete().eq('table_number', table);
-        await sb.from('dining_tables').update(<String, dynamic>{'status': 'pagada'}).eq('number', table);
+        // Conservamos la cuenta y fijamos el estado desde la pantalla de cobro.
       } else if (takeawayId != null) {
-        await sb.from('account_items').delete().eq('takeaway_id', takeawayId);
         await sb.from('takeaways').update(<String, dynamic>{'status': 'pagada'}).eq('id', takeawayId);
       } else {
         cart(cartKey ?? '').clear();
@@ -559,6 +564,7 @@ String hhmm(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
 
 // ======================= APP / TEMA =======================
 const kPrimary = Color(0xFFD84315);
+bool _bromaMostrada = false; // aviso temporal en broma
 
 class ComandasApp extends StatelessWidget {
   const ComandasApp({super.key});
@@ -602,7 +608,8 @@ Color statusColor(String s) => switch (s) {
       'cocina' => const Color(0xFF42A5F5),
       'listo' => const Color(0xFF26C6DA),
       'servido' => const Color(0xFFAB47BC),
-      'pagada' => const Color(0xFF8D6E63),
+      'pago_espera' => const Color(0xFFEF6C00),
+      'pago_servido' => const Color(0xFF6D4C41),
       _ => const Color(0xFF90A4AE),
     };
 String statusLabel(String s) => switch (s) {
@@ -611,7 +618,8 @@ String statusLabel(String s) => switch (s) {
       'cocina' => 'En cocina',
       'listo' => 'Pedido listo',
       'servido' => 'Servido',
-      'pagada' => 'Pagada - liberar',
+      'pago_espera' => 'Pagado - en espera',
+      'pago_servido' => 'Pagado - servido',
       _ => s,
     };
 
@@ -638,6 +646,21 @@ class _LoginScreenState extends State<LoginScreen> {
   String _pin = '';
   String? _err;
   static const _users = {'1111': 'Ana (Admin)', '2222': 'Luis (Mesero)', '3333': 'Cocina'};
+  @override
+  void initState() {
+    super.initState();
+    if (!_bromaMostrada) {
+      _bromaMostrada = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+          title: const Text('Aviso'),
+          content: const Text('Esta app fue creada por Angel. Rafael no hizo nada, no le crean. 😄'),
+          actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Jaja ok'))],
+        ));
+      });
+    }
+  }
   void _tap(String d) {
     if (_pin.length >= 4) return;
     setState(() { _pin += d; _err = null; });
@@ -850,10 +873,30 @@ class TableDetailScreen extends StatelessWidget {
     ));
   }
 
+  void _paraLlevar(BuildContext context) {
+    final ctrl = TextEditingController();
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text('Pedido para llevar'),
+      content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(labelText: 'Nombre del cliente', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+        FilledButton(onPressed: () async {
+          final nm = ctrl.text.trim().isEmpty ? 'Cliente' : ctrl.text.trim();
+          Navigator.pop(dctx);
+          final id = await store.createTakeaway(nm);
+          if (id != null && context.mounted) {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => OrderScreen(cartKey: 'llevar-$id', table: null, takeawayId: id, takeawayName: nm)));
+          }
+        }, child: const Text('Crear')),
+      ],
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Mesa $table'), actions: [
+        IconButton(tooltip: 'Pedido para llevar', icon: const Icon(Icons.takeout_dining), onPressed: () => _paraLlevar(context)),
         IconButton(tooltip: 'Cambiar de mesa', icon: const Icon(Icons.swap_horiz), onPressed: () => _cambiarMesa(context)),
       ]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
@@ -889,8 +932,8 @@ class TableDetailScreen extends StatelessWidget {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Row(children: [const Text('Total mesa', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), Text(dualUsd(total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))]),
               const SizedBox(height: 10),
-              if (store.tableStatus(table) == 'pagada') ...[
-                const Text('Cuenta PAGADA. Libera la mesa cuando el cliente se retire.', style: TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
+              if (store.tableStatus(table) == 'pago_espera' || store.tableStatus(table) == 'pago_servido') ...[
+                Text(store.tableStatus(table) == 'pago_espera' ? 'Pagado - el cliente esta esperando su pedido.' : 'Pagado y servido. Libera la mesa cuando el cliente se retire.', style: const TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
                 const SizedBox(height: 8),
                 SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
                   style: FilledButton.styleFrom(backgroundColor: const Color(0xFF66BB6A)),
@@ -1201,13 +1244,13 @@ class _PaymentScreenState extends State<PaymentScreen> {
       return;
     }
     if (widget.table != null) {
-      await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      await showDialog<void>(context: context, barrierDismissible: false, builder: (dctx) => AlertDialog(
         icon: const Icon(Icons.check_circle, color: Colors.green, size: 48),
-        title: Text('Mesa ${widget.table}: cuenta PAGADA'),
-        content: const Text('El pedido, ya esta entregado o queda en espera?'),
+        title: Text('Mesa ${widget.table}: cuenta pagada'),
+        content: const Text('El cliente ya recibio su pedido, o esta esperando?'),
         actions: [
-          OutlinedButton(onPressed: () => Navigator.pop(dctx), child: const Text('Pagado y en espera')),
-          FilledButton(onPressed: () async { await store.markDelivered(widget.table!); if (dctx.mounted) Navigator.pop(dctx); }, child: const Text('Pagado y entregado')),
+          OutlinedButton(onPressed: () async { await store.setTableStatus(widget.table!, 'pago_espera'); if (dctx.mounted) Navigator.pop(dctx); }, child: const Text('Esta esperando')),
+          FilledButton(onPressed: () async { await store.markDelivered(widget.table!); await store.setTableStatus(widget.table!, 'pago_servido'); if (dctx.mounted) Navigator.pop(dctx); }, child: const Text('Ya se le entrego')),
         ]));
     } else {
       await showDialog<void>(context: context, builder: (dctx) => AlertDialog(
