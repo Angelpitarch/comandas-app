@@ -198,7 +198,8 @@ class AccLine {
   final List<String> quita;
   final String? note;
   final double unitUsd;
-  AccLine(this.id, this.table, this.takeawayId, this.name, this.qty, this.size, this.extras, this.quita, this.note, this.unitUsd);
+  final String? ticketId;
+  AccLine(this.id, this.table, this.takeawayId, this.name, this.qty, this.size, this.extras, this.quita, this.note, this.unitUsd, {this.ticketId});
   factory AccLine.fromRow(Map<String, dynamic> r) => AccLine(
         r['id'] as String,
         r['table_number'] != null ? (r['table_number'] as num).toInt() : null,
@@ -210,6 +211,7 @@ class AccLine {
         [for (final q in (r['quita'] as List? ?? [])) q.toString()],
         r['note'] as String?,
         ((r['unit_usd'] ?? 0) as num).toDouble(),
+        ticketId: r['ticket_id'] as String?,
       );
   double get lineUsd => unitUsd * qty;
 }
@@ -252,6 +254,7 @@ class Store extends ChangeNotifier {
   List<Ticket> tickets = [];
   Map<int, List<AccLine>> accounts = {};
   List<Takeaway> takeaways = [];
+  List<Cancellation> cancellations = [];
   Map<String, List<AccLine>> takeawayAccounts = {};
   List<Sale> sales = [];
   List<Ingredient> ingredients = [];
@@ -285,6 +288,9 @@ class Store extends ChangeNotifier {
     }, onError: _onErr);
     sb.from('takeaways').stream(primaryKey: ['id']).order('created_at').listen((rows) {
       takeaways = rows.map((r) => Takeaway.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
+    sb.from('cancellations').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
+      cancellations = rows.map((r) => Cancellation.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
@@ -465,13 +471,14 @@ class Store extends ChangeNotifier {
       'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note,
     }];
     try {
-      await sb.from('tickets').insert(<String, dynamic>{
+      final tRes = await sb.from('tickets').insert(<String, dynamic>{
         'number': number, 'table_number': table, 'takeaway_id': takeawayId, 'takeaway_name': takeawayName, 'waiter': currentUser,
         'status': 'nueva', 'adicion': adicion, 'note': note, 'lines': lines,
-      });
+      }).select();
+      final ticketId = tRes.isNotEmpty ? tRes.first['id'] as String : null;
       if (table != null || takeawayId != null) {
         final accRows = [for (final it in items) <String, dynamic>{
-          'table_number': table, 'takeaway_id': takeawayId, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
+          'table_number': table, 'takeaway_id': takeawayId, 'ticket_id': ticketId, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
           'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note, 'unit_usd': toUsd(it.unit(), it.p.cur),
         }];
         await sb.from('account_items').insert(accRows);
@@ -494,6 +501,23 @@ class Store extends ChangeNotifier {
   }
   Future<void> cancelTicket(Ticket t) async {
     try { await sb.from('tickets').update(<String, dynamic>{'status': 'anulada'}).eq('id', t.id); } catch (e) { _onErr(e); }
+  }
+  double valueOfTicket(String ticketId) {
+    var v = 0.0;
+    for (final list in accounts.values) { for (final a in list) { if (a.ticketId == ticketId) v += a.lineUsd; } }
+    for (final list in takeawayAccounts.values) { for (final a in list) { if (a.ticketId == ticketId) v += a.lineUsd; } }
+    return v;
+  }
+  Future<void> cancelTicketFull(Ticket t, {required String reason, required bool merchandiseUsed}) async {
+    try {
+      final value = valueOfTicket(t.id);
+      await sb.from('cancellations').insert(<String, dynamic>{
+        'ticket_number': t.number, 'table_number': t.table, 'takeaway_name': t.takeawayName,
+        'reason': reason, 'merchandise_used': merchandiseUsed, 'value_usd': merchandiseUsed ? value : 0, 'by_user': currentUser,
+      });
+      await sb.from('account_items').delete().eq('ticket_id', t.id);
+      await sb.from('tickets').update(<String, dynamic>{'status': 'anulada'}).eq('id', t.id);
+    } catch (e) { _onErr(e); }
   }
   Future<void> reprint(Ticket t) async {
     try { await sb.from('tickets').update(<String, dynamic>{'reprinted': true}).eq('id', t.id); } catch (e) { _onErr(e); }
@@ -1420,6 +1444,31 @@ class _KitchenScreenState extends State<KitchenScreen> {
   }
   Color _c(String s) => switch (s) { 'nueva' => const Color(0xFF42A5F5), 'preparando' => const Color(0xFFFFA726), 'lista' => const Color(0xFF66BB6A), _ => Colors.grey };
 
+  void _anular(Ticket t) {
+    final reasonCtrl = TextEditingController();
+    bool usada = true;
+    showDialog<void>(context: context, builder: (dctx) => StatefulBuilder(builder: (dctx, setD) {
+      final value = store.valueOfTicket(t.id);
+      return AlertDialog(
+        title: Text('Anular comanda #' + t.number.toString().padLeft(6, '0')),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: reasonCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'Motivo de la anulacion', border: OutlineInputBorder())),
+          SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Se uso la mercancia?'),
+            subtitle: const Text('Si los alimentos ya se prepararon o gastaron'),
+            value: usada, onChanged: (v) => setD(() => usada = v)),
+          if (usada) Text('Total a descontar: ' + dualUsd(value), style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cerrar')),
+          FilledButton(onPressed: () async {
+            Navigator.pop(dctx);
+            await store.cancelTicketFull(t, reason: reasonCtrl.text.trim(), merchandiseUsed: usada);
+          }, child: const Text('Anular comanda')),
+        ],
+      );
+    }));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1473,7 +1522,7 @@ class _KitchenScreenState extends State<KitchenScreen> {
                     store.reprint(t);
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('REIMPRESION registrada (impresora real en Entrega 4)')));
                   }),
-                  IconButton(tooltip: 'Anular', icon: const Icon(Icons.cancel, color: Colors.red), onPressed: () => store.cancelTicket(t)),
+                  IconButton(tooltip: 'Anular', icon: const Icon(Icons.cancel, color: Colors.red), onPressed: () => _anular(t)),
                 ]),
                 Padding(padding: const EdgeInsets.fromLTRB(8, 0, 8, 8), child: SizedBox(width: double.infinity, child: FilledButton(
                   style: FilledButton.styleFrom(backgroundColor: c), onPressed: () => store.advance(t),
@@ -1531,6 +1580,10 @@ class _AdminScreenState extends State<AdminScreen> {
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InventoryScreen())),
           icon: const Icon(Icons.inventory_2), label: const Text('Inventario de ingredientes'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CancellationsScreen())),
+          icon: const Icon(Icons.money_off), label: const Text('Anulaciones / Perdidas'))),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -2085,6 +2138,64 @@ class TakeawayDetailScreen extends StatelessWidget {
                   icon: const Icon(Icons.point_of_sale), label: const Text('Cobrar'))),
               ],
             ]))))
+        ]);
+      }),
+    );
+  }
+}
+
+
+// ======================= ANULACIONES =======================
+class Cancellation {
+  final int number;
+  final int? table;
+  final String? takeawayName;
+  final String reason;
+  final bool merchandiseUsed;
+  final double valueUsd;
+  final String byUser;
+  final DateTime at;
+  Cancellation(this.number, this.table, this.takeawayName, this.reason, this.merchandiseUsed, this.valueUsd, this.byUser, this.at);
+  factory Cancellation.fromRow(Map<String, dynamic> r) => Cancellation(
+        ((r['ticket_number'] ?? 0) as num).toInt(),
+        r['table_number'] != null ? (r['table_number'] as num).toInt() : null,
+        r['takeaway_name'] as String?,
+        (r['reason'] ?? '') as String,
+        (r['merchandise_used'] ?? false) as bool,
+        ((r['value_usd'] ?? 0) as num).toDouble(),
+        (r['by_user'] ?? '') as String,
+        DateTime.tryParse((r['at'] ?? '') as String) ?? DateTime.now(),
+      );
+}
+
+class CancellationsScreen extends StatelessWidget {
+  const CancellationsScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Anulaciones / Perdidas')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final list = store.cancellations;
+        final now = DateTime.now();
+        bool sameDay(DateTime d) => d.year == now.year && d.month == now.month && d.day == now.day;
+        final totalPerdida = list.where((c) => sameDay(c.at)).fold(0.0, (v, c) => v + c.valueUsd);
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          Card(color: Colors.red.shade50, child: Padding(padding: const EdgeInsets.all(14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Perdida de hoy (mercancia usada)', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 4),
+              Text(dualUsd(totalPerdida), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.red)),
+            ]))),
+          const SizedBox(height: 12),
+          if (list.isEmpty) const Text('Sin anulaciones registradas', style: TextStyle(color: Colors.grey))
+          else for (final c in list)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
+              leading: Icon(c.merchandiseUsed ? Icons.money_off : Icons.cancel, color: c.merchandiseUsed ? Colors.red : Colors.grey),
+              title: Text('Comanda #' + c.number.toString().padLeft(6, '0') + ' - ' + (c.table != null ? 'Mesa ' + c.table.toString() : (c.takeawayName ?? 'Llevar'))),
+              subtitle: Text((c.reason.isEmpty ? 'Sin motivo' : c.reason) + '\n' + hhmm(c.at) + ' - ' + c.byUser + (c.merchandiseUsed ? ' - mercancia usada' : ' - sin usar')),
+              isThreeLine: true,
+              trailing: c.merchandiseUsed ? Text('-' + usd(c.valueUsd), style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold)) : null,
+            )),
         ]);
       }),
     );
