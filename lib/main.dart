@@ -61,8 +61,11 @@ class Product {
   List<Extra> extras;
   List<String> quita;
   bool available;
+  double stock;
+  double minStock;
+  bool trackStock;
   Product(this.id, this.name, this.emoji, this.cat, this.price, this.cur,
-      {this.sizes = const [], this.extras = const [], this.quita = const [], this.available = true});
+      {this.sizes = const [], this.extras = const [], this.quita = const [], this.available = true, this.stock = 0, this.minStock = 0, this.trackStock = false});
 
   factory Product.fromRow(Map<String, dynamic> r) => Product(
         r['id'] as String,
@@ -72,6 +75,9 @@ class Product {
         ((r['price'] ?? 0) as num).toDouble(),
         curFrom((r['currency'] ?? 'usd') as String),
         available: (r['available'] ?? true) as bool,
+        stock: ((r['stock'] ?? 0) as num).toDouble(),
+        minStock: ((r['min_stock'] ?? 0) as num).toDouble(),
+        trackStock: (r['track_stock'] ?? false) as bool,
         sizes: [for (final s in (r['sizes'] as List? ?? [])) Sz(s['name'] as String, (s['delta'] as num).toDouble())],
         extras: [for (final e in (r['extras'] as List? ?? [])) Extra((e['id'] ?? '') as String, e['name'] as String, ((e['price'] ?? 0) as num).toDouble())],
         quita: [for (final q in (r['quita'] as List? ?? [])) q.toString()],
@@ -84,6 +90,9 @@ class Product {
         'price': price,
         'currency': curStr(cur),
         'available': available,
+        'stock': stock,
+        'min_stock': minStock,
+        'track_stock': trackStock,
         'sizes': [for (final s in sizes) <String, dynamic>{'name': s.name, 'delta': s.delta}],
         'extras': [for (final e in extras) <String, dynamic>{'id': e.id, 'name': e.name, 'price': e.price}],
         'quita': quita,
@@ -272,6 +281,7 @@ class Store extends ChangeNotifier {
   List<AccLine> account(int n) => accounts[n] ?? const [];
   double accountTotalUsd(int n) => account(n).fold(0.0, (s, a) => s + a.lineUsd);
   List<Ticket> ticketsOf(int n) => tickets.where((x) => x.table == n && x.status != 'anulada').toList();
+  List<Product> get lowStock => products.where((p) => p.trackStock && p.stock <= p.minStock).toList();
 
   int _nextTicketNumber() {
     var m = 0;
@@ -339,6 +349,11 @@ class Store extends ChangeNotifier {
         }];
         await sb.from('account_items').insert(accRows);
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada'}).eq('number', table);
+      }
+      for (final it in items) {
+        if (it.p.trackStock) {
+          await sb.rpc('deduct_stock', params: <String, dynamic>{'p_id': it.p.id, 'p_qty': it.qty});
+        }
       }
       if (!keepCart) items.clear();
       notifyListeners();
@@ -479,6 +494,19 @@ String statusLabel(String s) => switch (s) {
       'servido' => 'Servido',
       _ => s,
     };
+
+Widget lowStockCard() {
+  final low = store.lowStock;
+  return Card(color: Colors.red.shade50, child: Padding(padding: const EdgeInsets.all(12),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: const [Icon(Icons.warning_amber, color: Colors.red), SizedBox(width: 8),
+        Text('Inventario bajo', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red))]),
+      const SizedBox(height: 6),
+      for (final p in low)
+        Text('- ' + p.name + ': ' + (p.stock <= 0 ? 'AGOTADO' : 'quedan ' + p.stock.toStringAsFixed(0)) + ' (min ' + p.minStock.toStringAsFixed(0) + ')',
+            style: const TextStyle(fontSize: 12.5)),
+    ])));
+}
 
 // ======================= LOGIN =======================
 class LoginScreen extends StatefulWidget {
@@ -771,6 +799,7 @@ class _OrderScreenState extends State<OrderScreen> {
                           Text(p.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, height: 1.1, fontSize: 13)),
                           const SizedBox(height: 3),
                           Text(dualPrice(p.price, p.cur), style: const TextStyle(fontSize: 10.5)),
+                          if (p.trackStock) Text('Quedan ' + p.stock.toStringAsFixed(0), style: TextStyle(fontSize: 10, color: p.stock <= p.minStock ? Colors.red : Colors.grey[600])),
                           if (!p.available) const Text('No disponible', style: TextStyle(color: Colors.red, fontSize: 10)),
                         ])))));
                   })),
@@ -1204,6 +1233,7 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(width: 8),
           Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())), icon: const Icon(Icons.history), label: const Text('Historial hoy'))),
         ]),
+        if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
@@ -1215,7 +1245,7 @@ class _AdminScreenState extends State<AdminScreen> {
               Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
                 leading: Text(p.emoji, style: const TextStyle(fontSize: 24)),
                 title: Text(p.name),
-                subtitle: Text('${dualPrice(p.price, p.cur)}  ·  base: ${p.cur.code}', style: const TextStyle(fontSize: 11.5)),
+                subtitle: Text('${dualPrice(p.price, p.cur)}  ·  base: ${p.cur.code}${p.trackStock ? '  ·  stock: ${p.stock.toStringAsFixed(0)}' : ''}', style: const TextStyle(fontSize: 11.5)),
                 onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProductForm(existing: p))),
                 trailing: Switch(value: p.available, onChanged: (_) => store.toggleProduct(p)))),
           ],
@@ -1233,10 +1263,10 @@ class ProductForm extends StatefulWidget {
   State<ProductForm> createState() => _ProductFormState();
 }
 class _ProductFormState extends State<ProductForm> {
-  late TextEditingController _name, _emoji, _price, _quita;
+  late TextEditingController _name, _emoji, _price, _quita, _stock, _minStock;
   late Cat _cat;
   late Currency _cur;
-  late bool _available, _useSizes;
+  late bool _available, _useSizes, _track;
   final List<List<TextEditingController>> _extras = [];
   bool _saving = false;
   @override
@@ -1251,11 +1281,14 @@ class _ProductFormState extends State<ProductForm> {
     _cur = e?.cur ?? Currency.usd;
     _available = e?.available ?? true;
     _useSizes = e != null && e.sizes.isNotEmpty;
+    _track = e?.trackStock ?? false;
+    _stock = TextEditingController(text: e != null ? e.stock.toStringAsFixed(0) : '0');
+    _minStock = TextEditingController(text: e != null ? e.minStock.toStringAsFixed(0) : '0');
     if (e != null) for (final ex in e.extras) { _extras.add([TextEditingController(text: ex.name), TextEditingController(text: ex.price.toStringAsFixed(2))]); }
   }
   @override
   void dispose() {
-    _name.dispose(); _emoji.dispose(); _price.dispose(); _quita.dispose();
+    _name.dispose(); _emoji.dispose(); _price.dispose(); _quita.dispose(); _stock.dispose(); _minStock.dispose();
     for (final row in _extras) { for (final c in row) { c.dispose(); } }
     super.dispose();
   }
@@ -1276,14 +1309,17 @@ class _ProductFormState extends State<ProductForm> {
     }
     final quita = _quita.text.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
     final emoji = _emoji.text.trim().isEmpty ? '🍽️' : _emoji.text.trim();
+    final stock = double.tryParse(_stock.text.replaceAll(',', '.')) ?? 0;
+    final minStock = double.tryParse(_minStock.text.replaceAll(',', '.')) ?? 0;
     setState(() => _saving = true);
     final e = widget.existing;
     if (e != null) {
       e.name = name; e.emoji = emoji; e.cat = _cat; e.price = price; e.cur = _cur;
       e.available = _available; e.sizes = sizes; e.extras = extras; e.quita = quita;
+      e.stock = stock; e.minStock = minStock; e.trackStock = _track;
       await store.updateProduct(e);
     } else {
-      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available));
+      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: stock, minStock: minStock, trackStock: _track));
     }
     if (!mounted) return;
     Navigator.pop(context);
@@ -1329,6 +1365,12 @@ class _ProductFormState extends State<ProductForm> {
         const SizedBox(height: 6),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Disponible'), value: _available, onChanged: (v) => setState(() => _available = v)),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Usar tamanos (Pequena/Mediana/Grande)'), value: _useSizes, onChanged: (v) => setState(() => _useSizes = v)),
+        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Controlar inventario'), subtitle: const Text('Descuenta del stock al vender y avisa cuando esta por agotarse'), value: _track, onChanged: (v) => setState(() => _track = v)),
+        if (_track) Padding(padding: const EdgeInsets.only(bottom: 6), child: Row(children: [
+          Expanded(child: TextField(controller: _stock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock actual', isDense: true, border: OutlineInputBorder()))),
+          const SizedBox(width: 12),
+          Expanded(child: TextField(controller: _minStock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock minimo (alerta)', isDense: true, border: OutlineInputBorder()))),
+        ])),
         const SizedBox(height: 6),
         TextField(controller: _quita, decoration: const InputDecoration(labelText: 'Ingredientes que se pueden quitar (separados por coma)', hintText: 'Cebolla, Tomate, Salsas', border: OutlineInputBorder())),
         const SizedBox(height: 16),
