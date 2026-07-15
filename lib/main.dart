@@ -325,6 +325,18 @@ class Store extends ChangeNotifier {
   Future<void> markDelivered(int table) async {
     try { await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'}).eq('table_number', table).neq('status', 'anulada'); } catch (e) { _onErr(e); }
   }
+  String kitchenStateTable(int n) {
+    final tks = tickets.where((x) => x.table == n && x.status != 'anulada' && x.status != 'entregada');
+    if (tks.any((x) => x.status == 'lista')) return 'listo';
+    if (tks.any((x) => x.status == 'nueva' || x.status == 'preparando')) return 'cocina';
+    return '';
+  }
+  String kitchenStateTakeaway(String id) {
+    final tks = tickets.where((x) => x.takeawayId == id && x.status != 'anulada' && x.status != 'entregada');
+    if (tks.any((x) => x.status == 'lista')) return 'listo';
+    if (tks.any((x) => x.status == 'nueva' || x.status == 'preparando')) return 'cocina';
+    return '';
+  }
   List<AccLine> takeawayAccount(String id) => takeawayAccounts[id] ?? const [];
   double takeawayTotalUsd(String id) => takeawayAccount(id).fold(0.0, (s, a) => s + a.lineUsd);
   List<Ticket> ticketsOfTakeaway(String id) => tickets.where((x) => x.takeawayId == id && x.status != 'anulada').toList();
@@ -790,6 +802,8 @@ class TablesScreen extends StatelessWidget {
           const Spacer(),
           Text(pagada ? 'PAGADO' : 'Abierto', style: TextStyle(color: c, fontWeight: FontWeight.w600, fontSize: 11)),
           if (total > 0) Text('Cuenta: ${usd(total)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+          if (store.kitchenStateTakeaway(t.id) == 'listo') Text('🔔 LISTO', style: TextStyle(fontSize: 10.5, color: Colors.green.shade700, fontWeight: FontWeight.bold))
+          else if (store.kitchenStateTakeaway(t.id) == 'cocina') Text('En cocina...', style: TextStyle(fontSize: 10.5, color: Colors.blue.shade700)),
         ]),
       ),
     )));
@@ -837,6 +851,8 @@ class TablesScreen extends StatelessWidget {
                     const Spacer(),
                     if (t.waiter != null) Text(t.waiter!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
                     if (total > 0) Text('Cuenta: ${usd(total)}', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600)),
+                    if (store.kitchenStateTable(t.number) == 'listo') Text('🔔 LISTO', style: TextStyle(fontSize: 11, color: Colors.green.shade700, fontWeight: FontWeight.bold))
+                    else if (store.kitchenStateTable(t.number) == 'cocina') Text('En cocina...', style: TextStyle(fontSize: 11, color: Colors.blue.shade700)),
                   ]),
                 ),
               ));
@@ -932,8 +948,15 @@ class TableDetailScreen extends StatelessWidget {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Row(children: [const Text('Total mesa', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)), const Spacer(), Text(dualUsd(total), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))]),
               const SizedBox(height: 10),
-              if (store.tableStatus(table) == 'pago_espera' || store.tableStatus(table) == 'pago_servido') ...[
-                Text(store.tableStatus(table) == 'pago_espera' ? 'Pagado - el cliente esta esperando su pedido.' : 'Pagado y servido. Libera la mesa cuando el cliente se retire.', style: const TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
+              if (store.tableStatus(table) == 'pago_espera') ...[
+                const Text('Pagado - el cliente esta esperando su pedido.', style: TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
+                const SizedBox(height: 8),
+                SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF6C00)),
+                  onPressed: () async { await store.markDelivered(table); await store.setTableStatus(table, 'pago_servido'); },
+                  icon: const Icon(Icons.room_service), label: const Text('Marcar como entregado'))),
+              ] else if (store.tableStatus(table) == 'pago_servido') ...[
+                const Text('Pagado y servido. Libera la mesa cuando el cliente se retire.', style: TextStyle(fontSize: 12.5, color: Color(0xFF6D4C41))),
                 const SizedBox(height: 8),
                 SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
                   style: FilledButton.styleFrom(backgroundColor: const Color(0xFF66BB6A)),
