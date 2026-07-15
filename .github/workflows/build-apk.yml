@@ -64,7 +64,7 @@ jobs:
         with:
           platform: android
           flutter-version: latest
-          args: "--artifact apk"
+          args: "--artifact apk --no-tree-shake-icons"
 
       - name: Publicar APK (solo en release)
         if: ${{ inputs.accion == 'release' }}
@@ -80,3 +80,4 @@ jobs:
         with:
           platform: android
           release-version: latest
+          args: "--no-tree-shake-icons"
