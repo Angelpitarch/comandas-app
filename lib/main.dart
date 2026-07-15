@@ -239,6 +239,7 @@ class Store extends ChangeNotifier {
   List<Ticket> tickets = [];
   Map<int, List<AccLine>> accounts = {};
   List<Sale> sales = [];
+  List<Ingredient> ingredients = [];
   final List<String> methods = ['Efectivo Bs', 'Efectivo USD', 'Pago movil', 'Tarjeta'];
   final Map<String, List<CartItem>> _carts = {};
   String currentUser = '';
@@ -265,6 +266,9 @@ class Store extends ChangeNotifier {
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
+    sb.from('ingredients').stream(primaryKey: ['id']).order('name').listen((rows) {
+      ingredients = rows.map((r) => Ingredient.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
   }
 
   void _onErr(Object e) { error = 'Error de conexion: $e'; notifyListeners(); }
@@ -282,6 +286,10 @@ class Store extends ChangeNotifier {
   double accountTotalUsd(int n) => account(n).fold(0.0, (s, a) => s + a.lineUsd);
   List<Ticket> ticketsOf(int n) => tickets.where((x) => x.table == n && x.status != 'anulada').toList();
   List<Product> get lowStock => products.where((p) => p.trackStock && p.stock <= p.minStock).toList();
+  List<Ingredient> get lowIngredients => ingredients.where((i) => i.low).toList();
+  Future<void> addIngredient(Ingredient i) async { try { await sb.from('ingredients').insert(i.toRow()); } catch (e) { _onErr(e); } }
+  Future<void> updateIngredient(Ingredient i) async { try { await sb.from('ingredients').update(i.toRow()).eq('id', i.id); } catch (e) { _onErr(e); } }
+  Future<void> deleteIngredient(Ingredient i) async { try { await sb.from('ingredients').delete().eq('id', i.id); } catch (e) { _onErr(e); } }
 
   int _nextTicketNumber() {
     var m = 0;
@@ -1233,6 +1241,10 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(width: 8),
           Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())), icon: const Icon(Icons.history), label: const Text('Historial hoy'))),
         ]),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InventoryScreen())),
+          icon: const Icon(Icons.inventory_2), label: const Text('Inventario de ingredientes'))),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -1440,6 +1452,144 @@ class HistoryScreen extends StatelessWidget {
               trailing: Text(usd(s.totalUsd), style: const TextStyle(fontWeight: FontWeight.bold)))),
         ]);
       }),
+    );
+  }
+}
+
+// ======================= INGREDIENTES (INVENTARIO) =======================
+String fmtQty(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2);
+
+class Ingredient {
+  String id;
+  String name;
+  String unit;
+  double stock;
+  double minStock;
+  Ingredient(this.id, this.name, this.unit, this.stock, this.minStock);
+  factory Ingredient.fromRow(Map<String, dynamic> r) => Ingredient(
+        r['id'] as String,
+        (r['name'] ?? '') as String,
+        (r['unit'] ?? 'unidad') as String,
+        ((r['stock'] ?? 0) as num).toDouble(),
+        ((r['min_stock'] ?? 0) as num).toDouble(),
+      );
+  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'unit': unit, 'stock': stock, 'min_stock': minStock};
+  bool get low => stock <= minStock;
+}
+
+class InventoryScreen extends StatelessWidget {
+  const InventoryScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Inventario de ingredientes')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const IngredientForm())),
+        icon: const Icon(Icons.add), label: const Text('Nuevo')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final low = store.lowIngredients;
+        final list = store.ingredients;
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          if (low.isNotEmpty) ...[
+            Card(color: Colors.red.shade50, child: Padding(padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: const [Icon(Icons.warning_amber, color: Colors.red), SizedBox(width: 8),
+                  Text('Ingredientes por agotarse', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red))]),
+                const SizedBox(height: 6),
+                for (final i in low)
+                  Text('- ${i.name}: ${i.stock <= 0 ? 'AGOTADO' : 'quedan ${fmtQty(i.stock)} ${i.unit}'}',
+                      style: const TextStyle(fontSize: 12.5)),
+              ]))),
+            const SizedBox(height: 12),
+          ],
+          if (list.isEmpty)
+            const Padding(padding: EdgeInsets.all(24),
+              child: Center(child: Text('Aun no hay ingredientes.\nToca "Nuevo" para agregar.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)))),
+          for (final i in list)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: i.low ? Colors.red.shade100 : Colors.green.shade100,
+                child: Icon(Icons.restaurant, color: i.low ? Colors.red : Colors.green, size: 20)),
+              title: Text(i.name),
+              subtitle: Text('Stock: ${fmtQty(i.stock)} ${i.unit}  ·  minimo: ${fmtQty(i.minStock)} ${i.unit}', style: const TextStyle(fontSize: 12)),
+              trailing: i.low ? const Icon(Icons.error, color: Colors.red) : const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => IngredientForm(existing: i))),
+            )),
+        ]);
+      }),
+    );
+  }
+}
+
+class IngredientForm extends StatefulWidget {
+  final Ingredient? existing;
+  const IngredientForm({super.key, this.existing});
+  @override
+  State<IngredientForm> createState() => _IngredientFormState();
+}
+class _IngredientFormState extends State<IngredientForm> {
+  static const _units = ['kg', 'g', 'unidad', 'litro', 'ml', 'paquete', 'bolsa'];
+  late TextEditingController _name, _stock, _minStock;
+  late String _unit;
+  bool _saving = false;
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _name = TextEditingController(text: e?.name ?? '');
+    _stock = TextEditingController(text: e != null ? fmtQty(e.stock) : '0');
+    _minStock = TextEditingController(text: e != null ? fmtQty(e.minStock) : '0');
+    _unit = e?.unit ?? 'kg';
+    if (!_units.contains(_unit)) _unit = 'kg';
+  }
+  @override
+  void dispose() { _name.dispose(); _stock.dispose(); _minStock.dispose(); super.dispose(); }
+  Future<void> _save() async {
+    if (_saving) return;
+    final name = _name.text.trim();
+    if (name.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
+    final stock = double.tryParse(_stock.text.replaceAll(',', '.')) ?? 0;
+    final minStock = double.tryParse(_minStock.text.replaceAll(',', '.')) ?? 0;
+    setState(() => _saving = true);
+    final e = widget.existing;
+    if (e != null) { e.name = name; e.unit = _unit; e.stock = stock; e.minStock = minStock; await store.updateIngredient(e); }
+    else { await store.addIngredient(Ingredient('', name, _unit, stock, minStock)); }
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.existing == null ? 'Nuevo ingrediente' : 'Editar ingrediente'), actions: [
+        if (widget.existing != null)
+          IconButton(icon: const Icon(Icons.delete), onPressed: () {
+            showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+              title: const Text('Eliminar ingrediente'),
+              content: Text('Eliminar "${widget.existing!.name}"?'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+                FilledButton(onPressed: () async { Navigator.pop(dctx); await store.deleteIngredient(widget.existing!); if (mounted) Navigator.pop(context); }, child: const Text('Eliminar')),
+              ]));
+          }),
+      ]),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre del ingrediente', hintText: 'Ej: Carne molida, Queso, Huevos', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(value: _unit,
+          decoration: const InputDecoration(labelText: 'Unidad de medida', border: OutlineInputBorder()),
+          items: [for (final u in _units) DropdownMenuItem(value: u, child: Text(u))],
+          onChanged: (v) => setState(() => _unit = v ?? 'kg')),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: TextField(controller: _stock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock actual', border: OutlineInputBorder()))),
+          const SizedBox(width: 12),
+          Expanded(child: TextField(controller: _minStock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock minimo (alerta)', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 20),
+        SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(onPressed: _saving ? null : _save,
+          icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
+          label: Text(_saving ? 'Guardando...' : 'Guardar ingrediente'))),
+      ]),
     );
   }
 }
