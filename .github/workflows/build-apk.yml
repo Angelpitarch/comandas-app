@@ -2,12 +2,25 @@ name: Build APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
+    inputs:
+      accion:
+        description: 'release = primera vez o cambios grandes (genera APK para instalar) | patch = actualizacion por el aire'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - release
+          - patch
+
+env:
+  SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,18 +31,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Flutter
+      - name: Flutter (para generar la carpeta android)
         uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: Generar carpeta android (preservando pubspec y lib)
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: Generar android (preservando pubspec, lib y shorebird.yaml)
         run: |
           cp pubspec.yaml /tmp/pubspec.yaml
           cp -r lib /tmp/lib_backup
+          cp shorebird.yaml /tmp/shorebird.yaml
           flutter create --platforms=android --project-name comandas_app --org com.puestocomida .
           cp /tmp/pubspec.yaml pubspec.yaml
           rm -rf lib && cp -r /tmp/lib_backup lib
+          cp /tmp/shorebird.yaml shorebird.yaml
 
       - name: Permiso de Internet para release
         run: |
@@ -37,17 +57,26 @@ jobs:
           if ! grep -q "android.permission.INTERNET" "$MANIFEST"; then
             sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
           fi
-          echo "----- Manifest -----"; head -n 8 "$MANIFEST"
 
-      - name: Dependencias
-        run: flutter pub get
+      - name: Shorebird Release (genera APK)
+        if: ${{ inputs.accion == 'release' }}
+        uses: shorebirdtech/shorebird-release@v1
+        with:
+          platform: android
+          flutter-version: latest
+          args: "--artifact apk"
 
-      - name: Compilar APK release
-        run: flutter build apk --release
-
-      - name: Publicar APK
+      - name: Publicar APK (solo en release)
+        if: ${{ inputs.accion == 'release' }}
         uses: actions/upload-artifact@v4
         with:
           name: comandas-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+      - name: Shorebird Patch (actualizacion por el aire)
+        if: ${{ inputs.accion == 'patch' }}
+        uses: shorebirdtech/shorebird-patch@v1
+        with:
+          platform: android
+          release-version: latest
