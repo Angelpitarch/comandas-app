@@ -23,14 +23,24 @@ jobs:
         with:
           channel: stable
 
-      - name: Generar carpeta android
-        run: flutter create --platforms=android --project-name comandas_app --org com.puestocomida .
+      - name: Generar carpeta android (preservando pubspec y lib)
+        run: |
+          cp pubspec.yaml /tmp/pubspec.yaml
+          cp -r lib /tmp/lib_backup
+          flutter create --platforms=android --project-name comandas_app --org com.puestocomida .
+          cp /tmp/pubspec.yaml pubspec.yaml
+          rm -rf lib && cp -r /tmp/lib_backup lib
+
+      - name: Permiso de Internet para release
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "android.permission.INTERNET" "$MANIFEST"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
+          fi
+          echo "----- Manifest -----"; head -n 8 "$MANIFEST"
 
       - name: Dependencias
         run: flutter pub get
-
-      - name: Analizar
-        run: flutter analyze || true
 
       - name: Compilar APK release
         run: flutter build apk --release
