@@ -377,6 +377,19 @@ class Store extends ChangeNotifier {
   Future<void> addUser(AppUser u) async { try { await sb.from('app_users').insert(u.toRow()); } catch (x) { _onErr(x); } }
   Future<void> updateUser(AppUser u) async { try { await sb.from('app_users').update(u.toRow()).eq('id', u.id); } catch (x) { _onErr(x); } }
   Future<void> deleteUser(AppUser u) async { try { await sb.from('app_users').delete().eq('id', u.id); } catch (x) { _onErr(x); } }
+  Future<AppUser?> loginByPin(String pin) async {
+    try {
+      final res = await sb.rpc('login_pin', params: <String, dynamic>{'p_pin': pin});
+      if (res is List && res.isNotEmpty) {
+        final r = res.first as Map;
+        return AppUser(id: r['id'] as String, name: (r['name'] ?? '') as String, role: (r['role'] ?? 'mesero') as String);
+      }
+    } catch (e) { _onErr(e); }
+    return null;
+  }
+  Future<void> saveUser({String? id, required String name, required String pin, required String role, required bool active}) async {
+    try { await sb.rpc('save_user', params: <String, dynamic>{'p_id': id, 'p_name': name, 'p_pin': pin, 'p_role': role, 'p_active': active}); } catch (e) { _onErr(e); }
+  }
   AppUser? userByPin(String pin) {
     for (final u in appUsers) { if (u.pin == pin && u.active) return u; }
     if (appUsers.isEmpty) {
@@ -426,6 +439,27 @@ class Store extends ChangeNotifier {
     final res = products.where((p) { final m = maxMakeable(p); return m >= 0 && m <= threshold; }).toList();
     res.sort((a, b) => maxMakeable(a).compareTo(maxMakeable(b)));
     return res;
+  }
+  double productCostUsd(Product p) {
+    if (p.comboItems.isNotEmpty) {
+      var c = 0.0;
+      for (final ci in p.comboItems) { final cp = productById(ci.productId); if (cp != null) c += productCostUsd(cp) * ci.qty; }
+      return c;
+    }
+    var c = 0.0;
+    for (final r in p.recipe) { final ing = ingredientById(r.ingredientId); if (ing != null) c += toUsd(ing.cost, ing.costCurrency) * r.qty; }
+    return c;
+  }
+  double productProfitUsd(Product p) => toUsd(p.price, p.cur) - productCostUsd(p);
+  double get todayCostUsd {
+    var c = 0.0;
+    for (final s in todaySales) {
+      for (final l in s.lines) {
+        final ps = products.where((x) => x.name == l.name).toList();
+        if (ps.isNotEmpty) c += productCostUsd(ps.first) * l.qty;
+      }
+    }
+    return c;
   }
   Future<void> _consume(Product p, double q) async {
     if (p.comboItems.isNotEmpty) {
@@ -734,17 +768,22 @@ class _LoginScreenState extends State<LoginScreen> {
       });
     }
   }
+  bool _checking = false;
   void _tap(String d) {
-    if (_pin.length >= 4) return;
+    if (_pin.length >= 4 || _checking) return;
     setState(() { _pin += d; _err = null; });
-    if (_pin.length == 4) {
-      final u = store.userByPin(_pin);
-      if (u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); }
-      else {
-        store.currentUser = u.name; store.currentUserRole = u.role;
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(u.role)));
-        setState(() => _pin = '');
-      }
+    if (_pin.length == 4) _validate();
+  }
+  Future<void> _validate() async {
+    setState(() => _checking = true);
+    final u = await store.loginByPin(_pin);
+    if (!mounted) return;
+    setState(() => _checking = false);
+    if (u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); }
+    else {
+      store.currentUser = u.name; store.currentUserRole = u.role;
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(u.role)));
+      setState(() => _pin = '');
     }
   }
   void _back() { if (_pin.isNotEmpty) setState(() => _pin = _pin.substring(0, _pin.length - 1)); }
@@ -1629,6 +1668,10 @@ class _AdminScreenState extends State<AdminScreen> {
           icon: const Icon(Icons.money_off), label: const Text('Anulaciones / Perdidas'))),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RentabilidadScreen())),
+          icon: const Icon(Icons.trending_up), label: const Text('Rentabilidad'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmployeesScreen())),
           icon: const Icon(Icons.badge), label: const Text('Trabajadores'))),
         const SizedBox(height: 8),
@@ -1917,15 +1960,19 @@ class Ingredient {
   String unit;
   double stock;
   double minStock;
-  Ingredient(this.id, this.name, this.unit, this.stock, this.minStock);
+  double cost;
+  Currency costCurrency;
+  Ingredient(this.id, this.name, this.unit, this.stock, this.minStock, {this.cost = 0, this.costCurrency = Currency.usd});
   factory Ingredient.fromRow(Map<String, dynamic> r) => Ingredient(
         r['id'] as String,
         (r['name'] ?? '') as String,
         (r['unit'] ?? 'unidad') as String,
         ((r['stock'] ?? 0) as num).toDouble(),
         ((r['min_stock'] ?? 0) as num).toDouble(),
+        cost: ((r['cost'] ?? 0) as num).toDouble(),
+        costCurrency: curFrom((r['cost_currency'] ?? 'usd') as String),
       );
-  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'unit': unit, 'stock': stock, 'min_stock': minStock};
+  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'unit': unit, 'stock': stock, 'min_stock': minStock, 'cost': cost, 'cost_currency': curStr(costCurrency)};
   bool get low => stock <= minStock;
 }
 
@@ -1981,8 +2028,9 @@ class IngredientForm extends StatefulWidget {
 }
 class _IngredientFormState extends State<IngredientForm> {
   static const _units = ['kg', 'g', 'unidad', 'litro', 'ml', 'paquete', 'bolsa'];
-  late TextEditingController _name, _stock, _minStock;
+  late TextEditingController _name, _stock, _minStock, _cost;
   late String _unit;
+  Currency _costCur = Currency.usd;
   bool _saving = false;
   @override
   void initState() {
@@ -1993,9 +2041,11 @@ class _IngredientFormState extends State<IngredientForm> {
     _minStock = TextEditingController(text: e != null ? fmtQty(e.minStock) : '0');
     _unit = e?.unit ?? 'kg';
     if (!_units.contains(_unit)) _unit = 'kg';
+    _cost = TextEditingController(text: e != null && e.cost > 0 ? fmtQty(e.cost) : '');
+    _costCur = e?.costCurrency ?? Currency.usd;
   }
   @override
-  void dispose() { _name.dispose(); _stock.dispose(); _minStock.dispose(); super.dispose(); }
+  void dispose() { _name.dispose(); _stock.dispose(); _minStock.dispose(); _cost.dispose(); super.dispose(); }
   Future<void> _save() async {
     if (_saving) return;
     final name = _name.text.trim();
@@ -2003,9 +2053,10 @@ class _IngredientFormState extends State<IngredientForm> {
     final stock = double.tryParse(_stock.text.replaceAll(',', '.')) ?? 0;
     final minStock = double.tryParse(_minStock.text.replaceAll(',', '.')) ?? 0;
     setState(() => _saving = true);
+    final cost = double.tryParse(_cost.text.replaceAll(',', '.')) ?? 0;
     final e = widget.existing;
-    if (e != null) { e.name = name; e.unit = _unit; e.stock = stock; e.minStock = minStock; await store.updateIngredient(e); }
-    else { await store.addIngredient(Ingredient('', name, _unit, stock, minStock)); }
+    if (e != null) { e.name = name; e.unit = _unit; e.stock = stock; e.minStock = minStock; e.cost = cost; e.costCurrency = _costCur; await store.updateIngredient(e); }
+    else { await store.addIngredient(Ingredient('', name, _unit, stock, minStock, cost: cost, costCurrency: _costCur)); }
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -2036,6 +2087,12 @@ class _IngredientFormState extends State<IngredientForm> {
           Expanded(child: TextField(controller: _stock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock actual', border: OutlineInputBorder()))),
           const SizedBox(width: 12),
           Expanded(child: TextField(controller: _minStock, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Stock minimo (alerta)', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 12),
+        Row(children: [
+          Expanded(child: TextField(controller: _cost, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Costo por unidad (compra)', border: OutlineInputBorder()))),
+          const SizedBox(width: 12),
+          SegmentedButton<Currency>(segments: const [ButtonSegment(value: Currency.usd, label: Text('USD')), ButtonSegment(value: Currency.ves, label: Text('Bs'))], selected: {_costCur}, onSelectionChanged: (v) => setState(() => _costCur = v.first)),
         ]),
         const SizedBox(height: 20),
         SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(onPressed: _saving ? null : _save,
@@ -2319,7 +2376,7 @@ class EmployeesScreen extends StatelessWidget {
                 child: Icon(Icons.person, color: e.active ? Colors.teal : Colors.grey)),
               title: Text(e.name.isEmpty ? '(sin nombre)' : e.name),
               subtitle: Text([if (e.position.isNotEmpty) e.position, if (e.schedule.isNotEmpty) e.schedule, if (!e.active) 'Inactivo'].join(' · '), style: const TextStyle(fontSize: 12)),
-              trailing: e.salary > 0 ? Text('Sueldo: ' + fmtQty(e.salary), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)) : null,
+              trailing: e.salary > 0 ? Text('Neto: ' + fmtQty(e.salary - e.deductions), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)) : null,
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EmployeeForm(existing: e))),
             )),
         ]);
@@ -2409,10 +2466,15 @@ class _EmployeeFormState extends State<EmployeeForm> {
         _field(_position, 'Cargo'),
         _field(_schedule, 'Horario de trabajo'),
         Row(children: [
-          Expanded(child: _field(_salary, 'Sueldo', number: true)),
+          Expanded(child: Padding(padding: const EdgeInsets.only(bottom: 12), child: TextField(controller: _salary, keyboardType: const TextInputType.numberWithOptions(decimal: true), onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Sueldo', border: OutlineInputBorder())))),
           const SizedBox(width: 12),
-          Expanded(child: _field(_deductions, 'Descuentos', number: true)),
+          Expanded(child: Padding(padding: const EdgeInsets.only(bottom: 12), child: TextField(controller: _deductions, keyboardType: const TextInputType.numberWithOptions(decimal: true), onChanged: (_) => setState(() {}), decoration: const InputDecoration(labelText: 'Descuentos', border: OutlineInputBorder())))),
         ]),
+        Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(children: [
+          const Text('Sueldo neto:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Spacer(),
+          Text(fmtQty((double.tryParse(_salary.text.replaceAll(',', '.')) ?? 0) - (double.tryParse(_deductions.text.replaceAll(',', '.')) ?? 0)), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        ])),
         _field(_notes, 'Curriculum / informacion adicional', lines: 4),
         SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Activo'), value: _active, onChanged: (v) => setState(() => _active = v)),
         const SizedBox(height: 16),
@@ -2471,7 +2533,7 @@ class UsersScreen extends StatelessWidget {
                 child: Icon(u.role == 'admin' ? Icons.admin_panel_settings : (u.role == 'cocina' ? Icons.soup_kitchen : Icons.room_service),
                   color: u.active ? Colors.indigo : Colors.grey)),
               title: Text(u.name.isEmpty ? '(sin nombre)' : u.name),
-              subtitle: Text(roleLabel(u.role) + '  ·  PIN ' + u.pin + (u.active ? '' : '  ·  inactivo'), style: const TextStyle(fontSize: 12)),
+              subtitle: Text(roleLabel(u.role) + (u.active ? '' : '  ·  inactivo'), style: const TextStyle(fontSize: 12)),
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => UserForm(existing: u))),
             )),
         ]);
@@ -2496,7 +2558,7 @@ class _UserFormState extends State<UserForm> {
     super.initState();
     final u = widget.existing;
     _name = TextEditingController(text: u?.name ?? '');
-    _pin = TextEditingController(text: u?.pin ?? '');
+    _pin = TextEditingController();
     _role = u?.role ?? 'mesero';
     _active = u?.active ?? true;
   }
@@ -2507,11 +2569,10 @@ class _UserFormState extends State<UserForm> {
     final name = _name.text.trim();
     final pin = _pin.text.trim();
     if (name.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
-    if (pin.length != 4 || int.tryParse(pin) == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 4 numeros'))); return; }
+    final editing = widget.existing != null;
+    if ((!editing || pin.isNotEmpty) && (pin.length != 4 || int.tryParse(pin) == null)) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 4 numeros'))); return; }
     setState(() => _saving = true);
-    final u = widget.existing ?? AppUser(id: '');
-    u.name = name; u.pin = pin; u.role = _role; u.active = _active;
-    if (widget.existing != null) { await store.updateUser(u); } else { await store.addUser(u); }
+    await store.saveUser(id: widget.existing?.id, name: name, pin: pin, role: _role, active: _active);
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -2534,7 +2595,7 @@ class _UserFormState extends State<UserForm> {
         TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre', border: OutlineInputBorder())),
         const SizedBox(height: 12),
         TextField(controller: _pin, keyboardType: TextInputType.number, maxLength: 4,
-          decoration: const InputDecoration(labelText: 'PIN (4 numeros)', border: OutlineInputBorder(), counterText: '')),
+          decoration: InputDecoration(labelText: widget.existing == null ? 'PIN (4 numeros)' : 'PIN nuevo (vacio = no cambiar)', border: const OutlineInputBorder(), counterText: '')),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(value: _role,
           decoration: const InputDecoration(labelText: 'Rol', border: OutlineInputBorder()),
@@ -2578,4 +2639,51 @@ Widget lowStockWaiterBanner() {
       if (low.length > 6) Text('... y ' + (low.length - 6).toString() + ' mas', style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
     ]),
   );
+}
+
+
+// ======================= RENTABILIDAD =======================
+class RentabilidadScreen extends StatelessWidget {
+  const RentabilidadScreen({super.key});
+  static Widget _row(String label, double v, {bool bold = false}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(children: [
+          Text(label, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+          const Spacer(),
+          Text(dualUsd(v), style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.w500)),
+        ]));
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Rentabilidad')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final rev = store.todayTotalUsd;
+        final cost = store.todayCostUsd;
+        final profit = rev - cost;
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          Card(color: Colors.green.shade50, child: Padding(padding: const EdgeInsets.all(14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Resumen de hoy', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              _row('Ventas', rev),
+              _row('Costo estimado', cost),
+              const Divider(),
+              _row('Ganancia', profit, bold: true),
+            ]))),
+          const SizedBox(height: 6),
+          const Text('El costo usa los precios de compra de los ingredientes.', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          const Divider(height: 24),
+          const Text('Ganancia por producto', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          for (final p in store.products)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true,
+              leading: Text(p.emoji, style: const TextStyle(fontSize: 22)),
+              title: Text(p.name, style: const TextStyle(fontSize: 13.5)),
+              subtitle: Text('Precio ' + usd(store.toUsd(p.price, p.cur)) + '  -  Costo ' + usd(store.productCostUsd(p)), style: const TextStyle(fontSize: 11.5)),
+              trailing: Text(usd(store.productProfitUsd(p)), style: TextStyle(fontWeight: FontWeight.bold, color: store.productProfitUsd(p) >= 0 ? Colors.green.shade700 : Colors.red)),
+            )),
+        ]);
+      }),
+    );
+  }
 }
