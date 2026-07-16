@@ -2,6 +2,7 @@
 // Un solo archivo. Datos compartidos entre dispositivos via Supabase.
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ====== CREDENCIALES DE SUPABASE (la key publishable es segura para el cliente) ======
@@ -1513,6 +1514,7 @@ class KitchenScreen extends StatefulWidget {
 class _KitchenScreenState extends State<KitchenScreen> {
   Timer? _timer;
   int _lastCount = -1;
+  bool _flash = false;
   @override
   void initState() {
     super.initState();
@@ -1520,6 +1522,21 @@ class _KitchenScreenState extends State<KitchenScreen> {
   }
   @override
   void dispose() { _timer?.cancel(); super.dispose(); }
+  void _alertNueva() {
+    HapticFeedback.heavyImpact();
+    var count = 0;
+    Timer.periodic(const Duration(milliseconds: 500), (t) {
+      SystemSound.play(SystemSoundType.alert);
+      HapticFeedback.mediumImpact();
+      count++;
+      if (count >= 4) t.cancel();
+    });
+    setState(() => _flash = true);
+    Future.delayed(const Duration(milliseconds: 1500), () { if (mounted) setState(() => _flash = false); });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('NUEVA COMANDA', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      backgroundColor: Color(0xFFD84315), duration: Duration(seconds: 3)));
+  }
   String _elapsed(DateTime d) {
     final s = DateTime.now().difference(d);
     return '${(s.inMinutes).toString().padLeft(2, '0')}:${(s.inSeconds % 60).toString().padLeft(2, '0')}';
@@ -1554,15 +1571,12 @@ class _KitchenScreenState extends State<KitchenScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF263238),
+      backgroundColor: _flash ? const Color(0xFFEF6C00) : const Color(0xFF263238),
       appBar: AppBar(title: const Text('Cocina - Comandas'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context))]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final list = store.tickets.where((t) => t.status != 'entregada' && t.status != 'anulada').toList();
         if (list.length > _lastCount && _lastCount != -1) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-              content: Text('🔔 Nueva comanda recibida'), duration: Duration(seconds: 2), backgroundColor: kPrimary));
-          });
+          WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _alertNueva(); });
         }
         _lastCount = list.length;
         if (list.isEmpty) return const Center(child: Text('Sin comandas pendientes', style: TextStyle(color: Colors.white70, fontSize: 18)));
