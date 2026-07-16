@@ -528,8 +528,8 @@ class Store extends ChangeNotifier {
     final items = cart(key);
     if (items.isEmpty) return null;
     final number = _nextTicketNumber();
-    final adicion = (table != null && tickets.any((t) => t.table == table && t.status != 'anulada')) ||
-        (takeawayId != null && tickets.any((t) => t.takeawayId == takeawayId && t.status != 'anulada'));
+    final adicion = (table != null && account(table).isNotEmpty) ||
+        (takeawayId != null && takeawayAccount(takeawayId).isNotEmpty);
     List<String> exNames(CartItem it) => [for (final e in it.p.extras) if (it.extras.contains(e.id)) e.name];
     final lines = [for (final it in items) <String, dynamic>{
       'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note,
