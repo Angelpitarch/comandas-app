@@ -1,0 +1,30 @@
+name: Backup DB
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # todos los dias a las 6:00 UTC (ajustable)
+  workflow_dispatch:        # tambien se puede correr a mano
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Respaldar estructura (schema)
+        run: supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" -f schema.sql
+
+      - name: Respaldar datos
+        run: supabase db dump --db-url "${{ secrets.SUPABASE_DB_URL }}" --data-only -f data.sql
+
+      - name: Guardar respaldo
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-backup
+          path: |
+            schema.sql
+            data.sql
+          retention-days: 90
