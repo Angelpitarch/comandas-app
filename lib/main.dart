@@ -678,7 +678,6 @@ String hhmm(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
 
 // ======================= APP / TEMA =======================
 const kPrimary = Color(0xFFD84315);
-bool _bromaMostrada = false; // aviso temporal en broma
 
 Widget _homeForRole(String role) =>
     role == 'admin' ? const AdminScreen() : (role == 'cocina' ? const KitchenScreen() : const TablesScreen());
@@ -776,17 +775,6 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     _cargarStaff();
-    if (!_bromaMostrada) {
-      _bromaMostrada = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        showDialog<void>(context: context, builder: (dctx) => AlertDialog(
-          title: const Text('Aviso'),
-          content: const Text('Esta app fue creada por Angel. Rafael no hizo nada, no le crean. 😄'),
-          actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Jaja ok'))],
-        ));
-      });
-    }
   }
 
   Future<void> _cargarStaff() async {
