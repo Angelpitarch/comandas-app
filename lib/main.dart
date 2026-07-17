@@ -336,6 +336,19 @@ class Store extends ChangeNotifier {
   Future<void> addIngredient(Ingredient i) async { try { await sb.from('ingredients').insert(i.toRow()); } catch (e) { _onErr(e); } }
   Future<void> updateIngredient(Ingredient i) async { try { await sb.from('ingredients').update(i.toRow()).eq('id', i.id); } catch (e) { _onErr(e); } }
   Future<void> deleteIngredient(Ingredient i) async { try { await sb.from('ingredients').delete().eq('id', i.id); } catch (e) { _onErr(e); } }
+  /// Deja la app lista para el proximo turno.
+  /// Libera mesas, cierra para-llevar y limpia comandas colgadas.
+  /// NO borra ventas, anulaciones ni configuracion.
+  Future<void> cierreDelDia() async {
+    try {
+      await sb.from('account_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await sb.from('takeaways').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await sb.from('tickets').update(<String, dynamic>{'status': 'entregada'})
+          .neq('status', 'anulada').neq('status', 'entregada');
+      await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null})
+          .gt('number', 0);
+    } catch (e) { _onErr(e); }
+  }
   Future<void> freeTable(int n) async {
     try {
       await sb.from('account_items').delete().eq('table_number', n);
@@ -1694,6 +1707,43 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   final _rate = TextEditingController();
   final _bizName = TextEditingController();
+
+  void _cierreDelDia(BuildContext context) {
+    final mesasPend = store.tables.where((t) => store.accountTotalUsd(t.number) > 0).length;
+    final llevarPend = store.takeaways.length;
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      icon: const Icon(Icons.nightlight_round, color: Colors.red, size: 40),
+      title: const Text('Cierre del dia'),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Deja la app lista para el proximo turno:'),
+        const SizedBox(height: 8),
+        const Text('- Libera todas las mesas'),
+        const Text('- Cierra los pedidos para llevar'),
+        const Text('- Limpia las comandas pendientes de cocina'),
+        const SizedBox(height: 10),
+        const Text('NO borra las ventas ni el historial.',
+          style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
+        if (mesasPend > 0 || llevarPend > 0) ...[
+          const SizedBox(height: 12),
+          Text('ATENCION: hay ' + mesasPend.toString() + ' mesa(s) con cuenta sin cobrar y ' +
+               llevarPend.toString() + ' pedido(s) para llevar abiertos. Si continuas, se descartan sin cobrar.',
+            style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600, fontSize: 13)),
+        ],
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red),
+          onPressed: () async {
+            Navigator.pop(dctx);
+            await store.cierreDelDia();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Cierre listo. Todo preparado para el proximo turno.')));
+            }
+          }, child: const Text('Cerrar el dia')),
+      ],
+    ));
+  }
   @override
   void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; }
   @override
@@ -1768,6 +1818,13 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(width: 8),
           Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const KitchenScreen())), icon: const Icon(Icons.soup_kitchen), label: const Text('Cocina'))),
         ]),
+        const SizedBox(height: 16),
+        SizedBox(width: double.infinity, height: 48, child: OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(foregroundColor: Colors.red, side: const BorderSide(color: Colors.red)),
+          onPressed: () => _cierreDelDia(context),
+          icon: const Icon(Icons.nightlight_round), label: const Text('Cierre del dia'))),
+        const Text('Libera mesas y limpia cocina para el proximo turno. No borra ventas.',
+          textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.grey)),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
