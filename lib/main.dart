@@ -541,7 +541,6 @@ class Store extends ChangeNotifier {
   Future<int?> send(String key, {int? table, String? takeawayId, String? takeawayName, String? note, bool keepCart = false}) async {
     final items = cart(key);
     if (items.isEmpty) return null;
-    final number = _nextTicketNumber();
     final adicion = (table != null && account(table).isNotEmpty) ||
         (takeawayId != null && takeawayAccount(takeawayId).isNotEmpty);
     List<String> exNames(CartItem it) => [for (final e in it.p.extras) if (it.extras.contains(e.id)) e.name];
@@ -550,10 +549,11 @@ class Store extends ChangeNotifier {
     }];
     try {
       final tRes = await sb.from('tickets').insert(<String, dynamic>{
-        'number': number, 'table_number': table, 'takeaway_id': takeawayId, 'takeaway_name': takeawayName, 'waiter': currentUser,
+        'table_number': table, 'takeaway_id': takeawayId, 'takeaway_name': takeawayName, 'waiter': currentUser,
         'status': 'nueva', 'adicion': adicion, 'note': note, 'lines': lines,
       }).select();
       final ticketId = tRes.isNotEmpty ? tRes.first['id'] as String : null;
+      final number = tRes.isNotEmpty ? ((tRes.first['number'] ?? 0) as num).toInt() : 0;
       if (table != null || takeawayId != null) {
         final accRows = [for (final it in items) <String, dynamic>{
           'table_number': table, 'takeaway_id': takeawayId, 'ticket_id': ticketId, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
