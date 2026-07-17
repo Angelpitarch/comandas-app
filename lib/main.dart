@@ -414,6 +414,17 @@ class Store extends ChangeNotifier {
       return List<Map<String, dynamic>>.from(res as List);
     } catch (e) { _onErr(e); return []; }
   }
+  /// Cambia el PIN del usuario que tiene la sesion abierta.
+  /// Verifica el PIN actual antes de permitir el cambio.
+  Future<bool> cambiarMiPin(String actual, String nuevo) async {
+    try {
+      final email = sb.auth.currentUser?.email;
+      if (email == null) return false;
+      await sb.auth.signInWithPassword(email: email, password: '$actual-comandas');
+      await sb.auth.updateUser(UserAttributes(password: '$nuevo-comandas'));
+      return true;
+    } catch (_) { return false; }
+  }
   Future<bool> signInStaff(String email, String pin) async {
     try {
       await sb.auth.signInWithPassword(email: email, password: '$pin-comandas');
@@ -841,15 +852,12 @@ class _LoginScreenState extends State<LoginScreen> {
     final email = (_sel?['email'] ?? '') as String;
     final name = (_sel?['name'] ?? '') as String;
     final role = (_sel?['role'] ?? 'mesero') as String;
-    var ok = false;
-    if (email.isNotEmpty) ok = await store.signInStaff(email, _pin);
-    AppUser? u;
-    if (!ok) u = await store.loginByPin(_pin); // red de seguridad temporal
+    final ok = email.isNotEmpty && await store.signInStaff(email, _pin);
     if (!mounted) return;
     setState(() => _checking = false);
-    if (!ok && u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); return; }
-    store.currentUser = ok ? name : u!.name;
-    store.currentUserRole = ok ? role : u!.role;
+    if (!ok) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); return; }
+    store.currentUser = name;
+    store.currentUserRole = role;
     store.init();
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(store.currentUserRole)));
     setState(() => _pin = '');
@@ -1018,7 +1026,11 @@ class TablesScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Mesas'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context))]),
+      appBar: AppBar(title: const Text('Mesas'), actions: [
+        IconButton(tooltip: 'Cambiar mi PIN', icon: const Icon(Icons.lock_reset, color: Colors.white),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePinScreen()))),
+        IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context)),
+      ]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _nuevoLlevar(context),
         icon: const Icon(Icons.takeout_dining), label: const Text('Para llevar'),
@@ -1663,7 +1675,11 @@ class _KitchenScreenState extends State<KitchenScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _flash ? const Color(0xFFEF6C00) : const Color(0xFF263238),
-      appBar: AppBar(title: const Text('Cocina - Comandas'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context))]),
+      appBar: AppBar(title: const Text('Cocina - Comandas'), actions: [
+        IconButton(tooltip: 'Cambiar mi PIN', icon: const Icon(Icons.lock_reset, color: Colors.white),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePinScreen()))),
+        IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout, color: Colors.white), onPressed: () => _logout(context)),
+      ]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final list = store.tickets.where((t) => t.status != 'entregada' && t.status != 'anulada').toList();
         if (list.length > _lastCount && _lastCount != -1) {
@@ -1776,7 +1792,11 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Administrador'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout), onPressed: () => _logout(context))]),
+      appBar: AppBar(title: const Text('Administrador'), actions: [
+        IconButton(tooltip: 'Cambiar mi PIN', icon: const Icon(Icons.lock_reset),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChangePinScreen()))),
+        IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout), onPressed: () => _logout(context)),
+      ]),
       body: AnimatedBuilder(animation: store, builder: (context, _) => ListView(padding: const EdgeInsets.all(16), children: [
         const Text('Nombre del negocio', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
@@ -2897,6 +2917,76 @@ class TableTicketsScreen extends StatelessWidget {
               ]))),
         ]);
       }),
+    );
+  }
+}
+
+
+// ======================= CAMBIAR MI PIN =======================
+class ChangePinScreen extends StatefulWidget {
+  const ChangePinScreen({super.key});
+  @override
+  State<ChangePinScreen> createState() => _ChangePinScreenState();
+}
+class _ChangePinScreenState extends State<ChangePinScreen> {
+  final _actual = TextEditingController();
+  final _nuevo = TextEditingController();
+  final _repite = TextEditingController();
+  bool _saving = false;
+  String? _err;
+
+  @override
+  void dispose() { _actual.dispose(); _nuevo.dispose(); _repite.dispose(); super.dispose(); }
+
+  Future<void> _guardar() async {
+    if (_saving) return;
+    final actual = _actual.text.trim();
+    final nuevo = _nuevo.text.trim();
+    final rep = _repite.text.trim();
+    if (nuevo.length != 4 || int.tryParse(nuevo) == null) {
+      setState(() => _err = 'El PIN nuevo debe ser de 4 numeros'); return;
+    }
+    if (nuevo != rep) { setState(() => _err = 'Los PIN nuevos no coinciden'); return; }
+    if (nuevo == actual) { setState(() => _err = 'El PIN nuevo debe ser distinto al actual'); return; }
+    setState(() { _saving = true; _err = null; });
+    final ok = await store.cambiarMiPin(actual, nuevo);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (!ok) { setState(() => _err = 'El PIN actual no es correcto'); return; }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('PIN actualizado. Usalo la proxima vez que entres.')));
+    Navigator.pop(context);
+  }
+
+  Widget _campo(TextEditingController c, String label) => Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: TextField(controller: c, keyboardType: TextInputType.number, maxLength: 4, obscureText: true,
+          decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), counterText: '')),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Cambiar mi PIN')),
+      body: Center(child: SingleChildScrollView(child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.lock_reset, size: 56, color: kPrimary),
+          const SizedBox(height: 6),
+          Text(store.currentUser, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text('Solo tu puedes cambiar tu PIN', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 20),
+          _campo(_actual, 'PIN actual'),
+          _campo(_nuevo, 'PIN nuevo (4 numeros)'),
+          _campo(_repite, 'Repite el PIN nuevo'),
+          if (_err != null) Padding(padding: const EdgeInsets.only(bottom: 10),
+            child: Text(_err!, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600))),
+          SizedBox(width: double.infinity, height: 50, child: FilledButton.icon(
+            onPressed: _saving ? null : _guardar,
+            icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
+            label: Text(_saving ? 'Guardando...' : 'Guardar PIN nuevo'))),
+        ])),
+      ))),
     );
   }
 }
