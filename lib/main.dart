@@ -13,7 +13,6 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseKey);
-    store.init();
   } catch (e) {
     store.error = 'No se pudo conectar a la nube: $e';
   }
@@ -264,9 +263,12 @@ class Store extends ChangeNotifier {
   final Map<String, List<CartItem>> _carts = {};
   String currentUser = '';
   String currentUserRole = '';
+  bool _inited = false;
   List<AppUser> appUsers = [];
 
   void init() {
+    if (_inited) return;
+    _inited = true;
     sb.from('app_config').stream(primaryKey: ['id']).listen((rows) {
       if (rows.isNotEmpty) { rate = ((rows.first['rate'] ?? 36.5) as num).toDouble(); connected = true; notifyListeners(); }
     }, onError: _onErr);
@@ -387,6 +389,18 @@ class Store extends ChangeNotifier {
       }
     } catch (e) { _onErr(e); }
     return null;
+  }
+  Future<List<Map<String, dynamic>>> loadStaff() async {
+    try {
+      final res = await sb.from('public_staff').select();
+      return List<Map<String, dynamic>>.from(res as List);
+    } catch (e) { _onErr(e); return []; }
+  }
+  Future<bool> signInStaff(String email, String pin) async {
+    try {
+      await sb.auth.signInWithPassword(email: email, password: '$pin-comandas');
+      return true;
+    } catch (_) { return false; }
   }
   Future<void> saveUser({String? id, required String name, required String pin, required String role, required bool active}) async {
     try { await sb.rpc('save_user', params: <String, dynamic>{'p_id': id, 'p_name': name, 'p_pin': pin, 'p_role': role, 'p_active': active}); } catch (e) { _onErr(e); }
@@ -753,10 +767,15 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   String _pin = '';
   String? _err;
-  static const _users = {'1111': 'Ana (Admin)', '2222': 'Luis (Mesero)', '3333': 'Cocina'};
+  bool _checking = false;
+  bool _loadingStaff = true;
+  List<Map<String, dynamic>> _staff = [];
+  Map<String, dynamic>? _sel;
+
   @override
   void initState() {
     super.initState();
+    _cargarStaff();
     if (!_bromaMostrada) {
       _bromaMostrada = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -769,51 +788,98 @@ class _LoginScreenState extends State<LoginScreen> {
       });
     }
   }
-  bool _checking = false;
+
+  Future<void> _cargarStaff() async {
+    final s = await store.loadStaff();
+    if (!mounted) return;
+    setState(() { _staff = s; _loadingStaff = false; });
+  }
+
   void _tap(String d) {
     if (_pin.length >= 4 || _checking) return;
     setState(() { _pin += d; _err = null; });
     if (_pin.length == 4) _validate();
   }
+
   Future<void> _validate() async {
     setState(() => _checking = true);
-    final u = await store.loginByPin(_pin);
+    final email = (_sel?['email'] ?? '') as String;
+    final name = (_sel?['name'] ?? '') as String;
+    final role = (_sel?['role'] ?? 'mesero') as String;
+    var ok = false;
+    if (email.isNotEmpty) ok = await store.signInStaff(email, _pin);
+    AppUser? u;
+    if (!ok) u = await store.loginByPin(_pin); // red de seguridad temporal
     if (!mounted) return;
     setState(() => _checking = false);
-    if (u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); }
-    else {
-      store.currentUser = u.name; store.currentUserRole = u.role;
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(u.role)));
-      setState(() => _pin = '');
-    }
+    if (!ok && u == null) { setState(() { _err = 'PIN incorrecto'; _pin = ''; }); return; }
+    store.currentUser = ok ? name : u!.name;
+    store.currentUserRole = ok ? role : u!.role;
+    store.init();
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(store.currentUserRole)));
+    setState(() => _pin = '');
   }
+
   void _back() { if (_pin.isNotEmpty) setState(() => _pin = _pin.substring(0, _pin.length - 1)); }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(child: Center(child: SingleChildScrollView(child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
-        child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.lunch_dining, size: 72, color: kPrimary),
-          const SizedBox(height: 8),
-          const Text('Comandas', style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
-          AnimatedBuilder(animation: store, builder: (_, __) => Text(
-            store.connected ? 'Conectado a la nube ✓' : 'Conectando...',
-            style: TextStyle(fontSize: 12, color: store.connected ? Colors.green : Colors.grey))),
-          const SizedBox(height: 16),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(4, (i) => Container(
-                margin: const EdgeInsets.symmetric(horizontal: 8), width: 18, height: 18,
-                decoration: BoxDecoration(shape: BoxShape.circle,
-                    color: i < _pin.length ? kPrimary : Colors.transparent, border: Border.all(color: kPrimary, width: 2))))),
-          SizedBox(height: 24, child: Text(_err ?? '', style: const TextStyle(color: Colors.red))),
-          _keypad(),
-          const SizedBox(height: 16),
-          Container(padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(12)),
-              child: const Text('PIN de prueba:\nAdmin 1111 · Mesero 2222 · Cocina 3333', textAlign: TextAlign.center, style: TextStyle(fontSize: 12.5))),
-        ])),
+        child: Padding(padding: const EdgeInsets.all(24),
+          child: _sel == null ? _listaPersonal() : _pinPad()),
       )))),
     );
   }
+
+  Widget _listaPersonal() => Column(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.lunch_dining, size: 72, color: kPrimary),
+        const SizedBox(height: 8),
+        const Text('Comandas', style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
+        const Text('Selecciona tu usuario'),
+        const SizedBox(height: 20),
+        if (_loadingStaff)
+          const Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())
+        else if (_staff.isEmpty)
+          Column(children: [
+            const Padding(padding: EdgeInsets.all(12),
+              child: Text('No se pudo cargar la lista de usuarios.\nRevisa la conexion.',
+                textAlign: TextAlign.center, style: TextStyle(color: Colors.red))),
+            OutlinedButton.icon(onPressed: () { setState(() => _loadingStaff = true); _cargarStaff(); },
+              icon: const Icon(Icons.refresh), label: const Text('Reintentar')),
+          ])
+        else
+          for (final s in _staff)
+            Padding(padding: const EdgeInsets.only(bottom: 8), child: SizedBox(width: double.infinity, height: 56,
+              child: FilledButton.tonalIcon(
+                onPressed: () => setState(() { _sel = s; _pin = ''; _err = null; }),
+                icon: Icon(((s['role'] ?? '') as String) == 'admin'
+                    ? Icons.admin_panel_settings
+                    : (((s['role'] ?? '') as String) == 'cocina' ? Icons.soup_kitchen : Icons.room_service)),
+                label: Text((s['name'] ?? '') as String, style: const TextStyle(fontSize: 16))))),
+      ]);
+
+  Widget _pinPad() => Column(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.lunch_dining, size: 56, color: kPrimary),
+        const SizedBox(height: 4),
+        Text((_sel?['name'] ?? '') as String, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        TextButton.icon(
+          onPressed: _checking ? null : () => setState(() { _sel = null; _pin = ''; _err = null; }),
+          icon: const Icon(Icons.arrow_back, size: 16), label: const Text('Cambiar usuario')),
+        const Text('Ingresa tu PIN'),
+        const SizedBox(height: 12),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(4, (i) => Container(
+              margin: const EdgeInsets.symmetric(horizontal: 8), width: 18, height: 18,
+              decoration: BoxDecoration(shape: BoxShape.circle,
+                  color: i < _pin.length ? kPrimary : Colors.transparent,
+                  border: Border.all(color: kPrimary, width: 2))))),
+        SizedBox(height: 24, child: _checking
+            ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+            : Text(_err ?? '', style: const TextStyle(color: Colors.red))),
+        _keypad(),
+      ]);
+
   Widget _k(String label, {VoidCallback? action, Widget? child}) => Padding(padding: const EdgeInsets.all(6),
       child: SizedBox(width: 72, height: 62, child: FilledButton.tonal(onPressed: action ?? () => _tap(label),
           child: child ?? Text(label, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600)))));
