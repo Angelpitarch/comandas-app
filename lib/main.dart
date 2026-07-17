@@ -249,6 +249,7 @@ class Store extends ChangeNotifier {
   String? error;
   bool connected = false;
   double rate = 36.5;
+  String businessName = 'Puesto de Comida';
   List<Product> products = [];
   List<TableModel> tables = [];
   List<Ticket> tickets = [];
@@ -270,7 +271,11 @@ class Store extends ChangeNotifier {
     if (_inited) return;
     _inited = true;
     sb.from('app_config').stream(primaryKey: ['id']).listen((rows) {
-      if (rows.isNotEmpty) { rate = ((rows.first['rate'] ?? 36.5) as num).toDouble(); connected = true; notifyListeners(); }
+      if (rows.isNotEmpty) {
+        rate = ((rows.first['rate'] ?? 36.5) as num).toDouble();
+        businessName = (rows.first['business_name'] ?? 'Puesto de Comida') as String;
+        connected = true; notifyListeners();
+      }
     }, onError: _onErr);
     sb.from('products').stream(primaryKey: ['id']).order('name').listen((rows) {
       products = rows.map((r) => Product.fromRow(r)).toList();
@@ -510,6 +515,10 @@ class Store extends ChangeNotifier {
     return 'servido';
   }
 
+  Future<void> setBusinessName(String n) async {
+    try { await sb.from('app_config').update(<String, dynamic>{'business_name': n, 'updated_at': DateTime.now().toIso8601String()}).eq('id', 1); }
+    catch (e) { _onErr(e); }
+  }
   Future<void> setRate(double r) async {
     try { await sb.from('app_config').update(<String, dynamic>{'rate': r, 'updated_at': DateTime.now().toIso8601String()}).eq('id', 1); }
     catch (e) { _onErr(e); }
@@ -1531,7 +1540,7 @@ class ReceiptScreen extends StatelessWidget {
           margin: const EdgeInsets.all(16), padding: const EdgeInsets.all(18),
           constraints: const BoxConstraints(maxWidth: 360), color: Colors.white,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-            const Center(child: Text('PUESTO DE COMIDA', style: TextStyle(fontFamily: 'monospace', fontSize: 15, fontWeight: FontWeight.bold))),
+            Center(child: Text(store.businessName.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'monospace', fontSize: 15, fontWeight: FontWeight.bold))),
             const Center(child: Text('PRECUENTA (no fiscal)', style: mono)),
             const Text('------------------------------', style: mono),
             Text('MESA $table', style: mono.copyWith(fontWeight: FontWeight.bold)),
@@ -1694,15 +1703,32 @@ class AdminScreen extends StatefulWidget {
 }
 class _AdminScreenState extends State<AdminScreen> {
   final _rate = TextEditingController();
+  final _bizName = TextEditingController();
   @override
-  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); }
+  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; }
   @override
-  void dispose() { _rate.dispose(); super.dispose(); }
+  void dispose() { _rate.dispose(); _bizName.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Administrador'), actions: [IconButton(tooltip: 'Salir', icon: const Icon(Icons.logout), onPressed: () => _logout(context))]),
       body: AnimatedBuilder(animation: store, builder: (context, _) => ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('Nombre del negocio', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
+          Expanded(child: TextField(controller: _bizName,
+            decoration: const InputDecoration(labelText: 'Sale en los comprobantes', isDense: true, border: OutlineInputBorder()))),
+          const SizedBox(width: 8),
+          FilledButton(onPressed: () async {
+            final n = _bizName.text.trim();
+            if (n.isEmpty) return;
+            await store.setBusinessName(n);
+            if (!context.mounted) return;
+            FocusScope.of(context).unfocus();
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nombre actualizado')));
+          }, child: const Text('Guardar')),
+        ]))),
+        const SizedBox(height: 16),
         const Text('Tasa de cambio (Bs por 1 USD)', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
@@ -2189,6 +2215,7 @@ class DaySummaryScreen extends StatelessWidget {
           margin: const EdgeInsets.all(16), padding: const EdgeInsets.all(18),
           constraints: const BoxConstraints(maxWidth: 380), color: Colors.white,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Center(child: Text(store.businessName.toUpperCase(), textAlign: TextAlign.center, style: const TextStyle(fontFamily: 'monospace', fontSize: 14, fontWeight: FontWeight.bold))),
             const Center(child: Text('RESUMEN DEL DIA', style: TextStyle(fontFamily: 'monospace', fontSize: 16, fontWeight: FontWeight.bold))),
             Center(child: Text('${two(now.day)}/${two(now.month)}/${now.year}  ${hhmm(now)}', style: mono)),
             const Text('==============================', style: mono),
