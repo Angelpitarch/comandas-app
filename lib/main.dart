@@ -1081,26 +1081,16 @@ class TableDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Mesa $table'), actions: [
+        IconButton(tooltip: 'Historial de comandas', icon: const Icon(Icons.history),
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => TableTicketsScreen(table: table)))),
         IconButton(tooltip: 'Pedido para llevar', icon: const Icon(Icons.takeout_dining), onPressed: () => _paraLlevar(context)),
         IconButton(tooltip: 'Cambiar de mesa', icon: const Icon(Icons.swap_horiz), onPressed: () => _cambiarMesa(context)),
       ]),
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final acc = store.account(table);
-        final tk = store.ticketsOf(table);
         final total = store.accountTotalUsd(table);
         return Column(children: [
           Expanded(child: ListView(padding: const EdgeInsets.all(14), children: [
-            if (tk.isNotEmpty) ...[
-              const Text('Estado en cocina', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 6),
-              for (final k in tk)
-                Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true,
-                  leading: CircleAvatar(backgroundColor: _kColor(k.status).withOpacity(0.18), child: Icon(_kIcon(k.status), color: _kColor(k.status), size: 20)),
-                  title: Text('Comanda #${k.number.toString().padLeft(6, '0')}${k.adicion ? '  (ADICION)' : ''}'),
-                  subtitle: Text('${k.lines.length} productos · enviada ${hhmm(k.sentAt)}'),
-                  trailing: Text(_kLabel(k.status), style: TextStyle(color: _kColor(k.status), fontWeight: FontWeight.w600)))),
-              const SizedBox(height: 12),
-            ],
             const Text('Lo pedido en esta mesa', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 6),
             if (acc.isEmpty)
@@ -2777,6 +2767,52 @@ class RentabilidadScreen extends StatelessWidget {
               subtitle: Text('Precio ' + usd(store.toUsd(p.price, p.cur)) + '  -  Costo ' + usd(store.productCostUsd(p)), style: const TextStyle(fontSize: 11.5)),
               trailing: Text(usd(store.productProfitUsd(p)), style: TextStyle(fontWeight: FontWeight.bold, color: store.productProfitUsd(p) >= 0 ? Colors.green.shade700 : Colors.red)),
             )),
+        ]);
+      }),
+    );
+  }
+}
+
+
+// ======================= HISTORIAL DE COMANDAS DE LA MESA =======================
+class TableTicketsScreen extends StatelessWidget {
+  final int table;
+  const TableTicketsScreen({super.key, required this.table});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Comandas - Mesa $table')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final list = store.tickets.where((t) => t.table == table).toList();
+        if (list.isEmpty) {
+          return const Center(child: Padding(padding: EdgeInsets.all(24),
+            child: Text('Esta mesa aun no tiene comandas.', style: TextStyle(color: Colors.grey))));
+        }
+        return ListView(padding: const EdgeInsets.all(14), children: [
+          for (final k in list)
+            Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  CircleAvatar(radius: 14, backgroundColor: _kColor(k.status).withOpacity(0.18),
+                    child: Icon(_kIcon(k.status), color: _kColor(k.status), size: 16)),
+                  const SizedBox(width: 8),
+                  Text('#' + k.number.toString().padLeft(6, '0'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                  if (k.adicion) Container(margin: const EdgeInsets.only(left: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), color: Colors.amber,
+                    child: const Text('ADICION', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold))),
+                  const Spacer(),
+                  Text(_kLabel(k.status), style: TextStyle(color: _kColor(k.status), fontWeight: FontWeight.w600, fontSize: 12)),
+                ]),
+                const SizedBox(height: 4),
+                Text('Enviada ' + hhmm(k.sentAt) + '  -  ' + k.waiter, style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                const Divider(height: 14),
+                for (final l in k.lines)
+                  Padding(padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(l.qty.toString() + '  ' + l.name + (l.size != null ? ' (' + l.size! + ')' : ''),
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+                if (k.note != null) Padding(padding: const EdgeInsets.only(top: 4),
+                  child: Text('Obs: ' + k.note!, style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic))),
+              ]))),
         ]);
       }),
     );
