@@ -876,9 +876,23 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  // Logo de la app, con esquinas redondeadas y sombra suave.
+  Widget _logo(double s) => Container(
+        width: s, height: s,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(s * 0.23),
+          boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 14, offset: Offset(0, 5))],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(s * 0.23),
+          child: Image.asset('logo.png', width: s, height: s, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Icon(Icons.lunch_dining, size: s * 0.7, color: kPrimary)),
+        ),
+      );
+
   Widget _listaPersonal() => Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.lunch_dining, size: 72, color: kPrimary),
-        const SizedBox(height: 8),
+        _logo(92),
+        const SizedBox(height: 14),
         const Text('Comandas', style: TextStyle(fontSize: 30, fontWeight: FontWeight.bold)),
         const Text('Selecciona tu usuario'),
         const SizedBox(height: 20),
@@ -904,8 +918,8 @@ class _LoginScreenState extends State<LoginScreen> {
       ]);
 
   Widget _pinPad() => Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.lunch_dining, size: 56, color: kPrimary),
-        const SizedBox(height: 4),
+        _logo(64),
+        const SizedBox(height: 10),
         Text((_sel?['name'] ?? '') as String, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         TextButton.icon(
           onPressed: _checking ? null : () => setState(() { _sel = null; _pin = ''; _err = null; }),
