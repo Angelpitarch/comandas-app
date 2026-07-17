@@ -58,6 +58,16 @@ jobs:
             sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
           fi
 
+      - name: Nombre de la app
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          sed -i 's#android:label="comandas_app"#android:label="Comandas"#' "$MANIFEST"
+
+      - name: Generar icono de la app
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons
+
       - name: Shorebird Release (genera APK)
         if: ${{ inputs.accion == 'release' }}
         uses: shorebirdtech/shorebird-release@v1
