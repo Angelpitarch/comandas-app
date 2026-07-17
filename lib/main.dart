@@ -339,7 +339,7 @@ class Store extends ChangeNotifier {
   /// Deja la app lista para el proximo turno.
   /// Libera mesas, cierra para-llevar y limpia comandas colgadas.
   /// NO borra ventas, anulaciones ni configuracion.
-  Future<void> cierreDelDia() async {
+  Future<void> cierreDeTurno() async {
     try {
       await sb.from('account_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       await sb.from('takeaways').delete().neq('id', '00000000-0000-0000-0000-000000000000');
@@ -563,14 +563,39 @@ class Store extends ChangeNotifier {
   Future<int?> send(String key, {int? table, String? takeawayId, String? takeawayName, String? note, bool keepCart = false}) async {
     final items = cart(key);
     if (items.isEmpty) return null;
-    final adicion = (table != null && account(table).isNotEmpty) ||
-        (takeawayId != null && takeawayAccount(takeawayId).isNotEmpty);
+
+    // Si la mesa / para-llevar tiene una cuenta abierta SIN cobrar y ya existe
+    // una comanda valida, la adicion reusa ESE mismo numero.
+    // Si ya se cobro, o la comanda anterior fue anulada, se genera un numero nuevo.
+    int? numeroSesion;
+    if (table != null && account(table).isNotEmpty) {
+      final st = tableStatus(table);
+      if (st != 'pago_espera' && st != 'pago_servido') {
+        final previas = tickets.where((t) => t.table == table && t.status != 'anulada').toList();
+        if (previas.isNotEmpty) {
+          previas.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+          numeroSesion = previas.last.number;
+        }
+      }
+    } else if (takeawayId != null && takeawayAccount(takeawayId).isNotEmpty) {
+      final tw = takeaways.where((t) => t.id == takeawayId).toList();
+      final yaPagada = tw.isNotEmpty && tw.first.status == 'pagada';
+      if (!yaPagada) {
+        final previas = tickets.where((t) => t.takeawayId == takeawayId && t.status != 'anulada').toList();
+        if (previas.isNotEmpty) {
+          previas.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+          numeroSesion = previas.last.number;
+        }
+      }
+    }
+    final adicion = numeroSesion != null;
     List<String> exNames(CartItem it) => [for (final e in it.p.extras) if (it.extras.contains(e.id)) e.name];
     final lines = [for (final it in items) <String, dynamic>{
       'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note,
     }];
     try {
       final tRes = await sb.from('tickets').insert(<String, dynamic>{
+        if (numeroSesion != null) 'number': numeroSesion,
         'table_number': table, 'takeaway_id': takeawayId, 'takeaway_name': takeawayName, 'waiter': currentUser,
         'status': 'nueva', 'adicion': adicion, 'note': note, 'lines': lines,
       }).select();
@@ -1708,14 +1733,14 @@ class _AdminScreenState extends State<AdminScreen> {
   final _rate = TextEditingController();
   final _bizName = TextEditingController();
 
-  void _cierreDelDia(BuildContext context) {
+  void _cierreDeTurno(BuildContext context) {
     final mesasPend = store.tables.where((t) => store.accountTotalUsd(t.number) > 0).length;
     final llevarPend = store.takeaways.length;
     showDialog<void>(context: context, builder: (dctx) => AlertDialog(
       icon: const Icon(Icons.nightlight_round, color: Colors.red, size: 40),
-      title: const Text('Cierre del dia'),
+      title: const Text('Cierre de turno'),
       content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Deja la app lista para el proximo turno:'),
+        const Text('Deja la app lista para el siguiente turno:'),
         const SizedBox(height: 8),
         const Text('- Libera todas las mesas'),
         const Text('- Cierra los pedidos para llevar'),
@@ -1735,12 +1760,12 @@ class _AdminScreenState extends State<AdminScreen> {
         FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red),
           onPressed: () async {
             Navigator.pop(dctx);
-            await store.cierreDelDia();
+            await store.cierreDeTurno();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Cierre listo. Todo preparado para el proximo turno.')));
+                const SnackBar(content: Text('Turno cerrado. Todo listo para el siguiente turno.')));
             }
-          }, child: const Text('Cerrar el dia')),
+          }, child: const Text('Cerrar turno')),
       ],
     ));
   }
@@ -1821,9 +1846,9 @@ class _AdminScreenState extends State<AdminScreen> {
         const SizedBox(height: 16),
         SizedBox(width: double.infinity, height: 48, child: OutlinedButton.icon(
           style: OutlinedButton.styleFrom(foregroundColor: Colors.red, side: const BorderSide(color: Colors.red)),
-          onPressed: () => _cierreDelDia(context),
-          icon: const Icon(Icons.nightlight_round), label: const Text('Cierre del dia'))),
-        const Text('Libera mesas y limpia cocina para el proximo turno. No borra ventas.',
+          onPressed: () => _cierreDeTurno(context),
+          icon: const Icon(Icons.restart_alt), label: const Text('Cierre de turno'))),
+        const Text('Libera mesas y limpia cocina para el siguiente turno. No borra ventas.',
           textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.grey)),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
