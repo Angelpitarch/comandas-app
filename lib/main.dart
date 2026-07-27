@@ -244,6 +244,24 @@ class Sale {
       );
 }
 
+class CashClose {
+  final DateTime closedAt;
+  final DateTime? fromAt;
+  final double totalUsd;
+  final int accountsCount;
+  final Map<String, double> byMethod;
+  final Map<String, int> units;
+  CashClose(this.closedAt, this.fromAt, this.totalUsd, this.accountsCount, this.byMethod, this.units);
+  factory CashClose.fromRow(Map<String, dynamic> r) => CashClose(
+        (DateTime.tryParse((r['closed_at'] ?? '') as String)?.toLocal()) ?? DateTime.now(),
+        r['from_at'] != null ? DateTime.tryParse(r['from_at'] as String)?.toLocal() : null,
+        ((r['total_usd'] ?? 0) as num).toDouble(),
+        ((r['accounts_count'] ?? 0) as num).toInt(),
+        {for (final e in ((r['by_method'] ?? <String, dynamic>{}) as Map).entries) e.key as String: ((e.value ?? 0) as num).toDouble()},
+        {for (final e in ((r['units'] ?? <String, dynamic>{}) as Map).entries) e.key as String: ((e.value ?? 0) as num).toInt()},
+      );
+}
+
 // ======================= STORE (conectado a Supabase) =======================
 class Store extends ChangeNotifier {
   String? error;
@@ -259,6 +277,7 @@ class Store extends ChangeNotifier {
   List<Employee> employees = [];
   Map<String, List<AccLine>> takeawayAccounts = {};
   List<Sale> sales = [];
+  List<CashClose> cashCloses = [];
   List<Ingredient> ingredients = [];
   final List<String> methods = ['Efectivo Bs', 'Efectivo USD', 'Pago movil', 'Tarjeta'];
   final Map<String, List<CartItem>> _carts = {};
@@ -312,6 +331,9 @@ class Store extends ChangeNotifier {
     sb.from('sales').stream(primaryKey: ['id']).order('at', ascending: false).listen((rows) {
       sales = rows.map((r) => Sale.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
+    sb.from('cash_closes').stream(primaryKey: ['id']).order('closed_at', ascending: false).listen((rows) {
+      cashCloses = rows.map((r) => CashClose.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
     sb.from('ingredients').stream(primaryKey: ['id']).order('name').listen((rows) {
       ingredients = rows.map((r) => Ingredient.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
@@ -347,6 +369,27 @@ class Store extends ChangeNotifier {
           .neq('status', 'anulada').neq('status', 'entregada');
       await sb.from('dining_tables').update(<String, dynamic>{'status': 'disponible', 'waiter': null, 'opened_at': null})
           .gt('number', 0);
+    } catch (e) { _onErr(e); }
+  }
+
+  /// Cierra la caja: guarda un resumen del periodo actual en el historial
+  /// de dias y luego reinicia mesas, pedidos y comandas (conserva las ventas).
+  Future<void> hacerCierreDeCaja() async {
+    try {
+      final ventas = todaySales;
+      final total = ventas.fold(0.0, (s, e) => s + e.totalUsd);
+      final byMethod = <String, double>{};
+      for (final s in ventas) { for (final p in s.payments) { byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountUsd; } }
+      final units = <String, int>{};
+      for (final s in ventas) { for (final l in s.lines) { units[l.name] = (units[l.name] ?? 0) + l.qty; } }
+      await sb.from('cash_closes').insert(<String, dynamic>{
+        'from_at': lastCloseAt?.toUtc().toIso8601String(),
+        'total_usd': total,
+        'accounts_count': ventas.length,
+        'by_method': byMethod,
+        'units': units,
+      });
+      await cierreDeTurno();
     } catch (e) { _onErr(e); }
   }
   Future<void> freeTable(int n) async {
@@ -703,8 +746,13 @@ class Store extends ChangeNotifier {
     } catch (e) { _onErr(e); return false; }
   }
 
-  bool _sameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
-  List<Sale> get todaySales => sales.where((s) => _sameDay(s.at, DateTime.now())).toList();
+  DateTime? get lastCloseAt => cashCloses.isNotEmpty ? cashCloses.first.closedAt : null;
+  // "Hoy" = ventas desde el ultimo cierre de caja (no por fecha del calendario).
+  List<Sale> get todaySales {
+    final lc = lastCloseAt;
+    if (lc == null) return List<Sale>.from(sales);
+    return sales.where((s) => s.at.isAfter(lc)).toList();
+  }
   double get todayTotalUsd => todaySales.fold(0.0, (s, e) => s + e.totalUsd);
   Map<String, int> unitsToday() {
     final m = <String, int>{};
@@ -738,6 +786,7 @@ String dualUsd(double u) => '${usd(u)} · ${ves(u * store.rate)}';
 String dualPrice(double amt, Currency c) => '${usd(store.toUsd(amt, c))} · ${ves(store.toVes(amt, c))}';
 String two(int n) => n.toString().padLeft(2, '0');
 String hhmm(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
+String fecha(DateTime d) => '${two(d.day)}/${two(d.month)}/${d.year}';
 
 // ======================= APP / TEMA =======================
 const kPrimary = Color(0xFFD84315);
@@ -1817,7 +1866,7 @@ class _AdminScreenState extends State<AdminScreen> {
         FilledButton(style: FilledButton.styleFrom(backgroundColor: kPrimary),
           onPressed: () async {
             Navigator.pop(dctx);
-            await store.cierreDeTurno();
+            await store.hacerCierreDeCaja();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Caja cerrada. Mesas, pedidos y comandas reiniciados.')));
@@ -1878,6 +1927,10 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(width: 8),
           Expanded(child: FilledButton.tonalIcon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())), icon: const Icon(Icons.history), label: const Text('Historial hoy'))),
         ]),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryDaysScreen())),
+          icon: const Icon(Icons.calendar_month), label: const Text('Historial de dias'))),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InventoryScreen())),
@@ -2126,6 +2179,48 @@ class _ProductFormState extends State<ProductForm> {
 }
 
 // ======================= HISTORIAL DEL DIA =======================
+class HistoryDaysScreen extends StatelessWidget {
+  const HistoryDaysScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Historial de dias')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final cierres = store.cashCloses;
+        if (cierres.isEmpty) {
+          return const Center(child: Padding(padding: EdgeInsets.all(24),
+            child: Text('Aun no hay cierres de caja.', style: TextStyle(color: Colors.grey))));
+        }
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          for (final c in cierres)
+            Card(margin: const EdgeInsets.only(bottom: 8), child: ListTile(
+              leading: const Icon(Icons.event_available, color: kPrimary),
+              title: Text(fecha(c.closedAt), style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('${c.accountsCount} cuentas  ·  cerrado ${hhmm(c.closedAt)}'),
+              trailing: Text(usd(c.totalUsd), style: const TextStyle(fontWeight: FontWeight.bold)),
+              onTap: () => showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+                title: Text('Cierre del ${fecha(c.closedAt)}'),
+                content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Total: ${dualUsd(c.totalUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  Text('${c.accountsCount} cuentas cobradas'),
+                  const SizedBox(height: 10),
+                  const Text('Por medio de pago:', style: TextStyle(fontWeight: FontWeight.w600)),
+                  if (c.byMethod.isEmpty) const Text('-', style: TextStyle(color: Colors.grey))
+                  else for (final e in c.byMethod.entries) Text('- ${e.key}: ${dualUsd(e.value)}'),
+                  const SizedBox(height: 10),
+                  const Text('Unidades por producto:', style: TextStyle(fontWeight: FontWeight.w600)),
+                  if (c.units.isEmpty) const Text('-', style: TextStyle(color: Colors.grey))
+                  else for (final e in (c.units.entries.toList()..sort((a, b) => b.value.compareTo(a.value)))) Text('- ${e.value}  ${e.key}'),
+                ])),
+                actions: [TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cerrar'))],
+              )),
+            )),
+        ]);
+      }),
+    );
+  }
+}
+
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
   @override
