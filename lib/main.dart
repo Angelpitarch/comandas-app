@@ -237,7 +237,7 @@ class Sale {
   Sale(this.table, this.at, this.lines, this.totalUsd, this.payments);
   factory Sale.fromRow(Map<String, dynamic> r) => Sale(
         r['table_number'] != null ? (r['table_number'] as num).toInt() : null,
-        DateTime.tryParse((r['at'] ?? '') as String) ?? DateTime.now(),
+        (DateTime.tryParse((r['at'] ?? '') as String)?.toLocal()) ?? DateTime.now(),
         [for (final l in (r['lines'] as List? ?? [])) SaleLine((l['name'] ?? '') as String, ((l['qty'] ?? 0) as num).toInt(), ((l['lineUsd'] ?? 0) as num).toDouble())],
         ((r['total_usd'] ?? 0) as num).toDouble(),
         [for (final p in (r['payments'] as List? ?? [])) Payment((p['method'] ?? '') as String, ((p['amountUsd'] ?? 0) as num).toDouble(), reference: p['reference'] as String?)],
@@ -415,15 +415,20 @@ class Store extends ChangeNotifier {
     } catch (e) { _onErr(e); return []; }
   }
   /// Cambia el PIN del usuario que tiene la sesion abierta.
-  /// Verifica el PIN actual antes de permitir el cambio.
-  Future<bool> cambiarMiPin(String actual, String nuevo) async {
+  /// Usa la funcion 'cambiar_pin' de Supabase (aplica al instante).
+  /// Devuelve null si todo bien, o un mensaje de error para mostrar.
+  Future<String?> cambiarMiPin(String actual, String nuevo) async {
     try {
-      final email = sb.auth.currentUser?.email;
-      if (email == null) return false;
-      await sb.auth.signInWithPassword(email: email, password: '$actual-comandas');
-      await sb.auth.updateUser(UserAttributes(password: '$nuevo-comandas'));
-      return true;
-    } catch (_) { return false; }
+      final res = await sb.rpc('cambiar_pin',
+          params: <String, dynamic>{'p_actual': actual, 'p_nuevo': nuevo});
+      switch (res.toString()) {
+        case 'ok': return null;
+        case 'pin_actual_incorrecto': return 'El PIN actual no es correcto';
+        case 'pin_nuevo_invalido': return 'El PIN nuevo debe ser de 4 numeros';
+        case 'sin_sesion': return 'Tu sesion expiro. Vuelve a entrar e intenta de nuevo.';
+        default: return 'No se pudo cambiar el PIN. Revisa tu conexion.';
+      }
+    } catch (_) { return 'No se pudo cambiar el PIN. Revisa tu conexion.'; }
   }
   Future<bool> signInStaff(String email, String pin) async {
     try {
@@ -1763,39 +1768,61 @@ class _AdminScreenState extends State<AdminScreen> {
   final _rate = TextEditingController();
   final _bizName = TextEditingController();
 
-  void _cierreDeTurno(BuildContext context) {
-    final mesasPend = store.tables.where((t) => store.accountTotalUsd(t.number) > 0).length;
-    final llevarPend = store.takeaways.length;
-    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
-      icon: const Icon(Icons.nightlight_round, color: Colors.red, size: 40),
-      title: const Text('Cierre de turno'),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Deja la app lista para el siguiente turno:'),
-        const SizedBox(height: 8),
-        const Text('- Libera todas las mesas'),
-        const Text('- Cierra los pedidos para llevar'),
-        const Text('- Limpia las comandas pendientes de cocina'),
-        const SizedBox(height: 10),
-        const Text('NO borra las ventas ni el historial.',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
-        if (mesasPend > 0 || llevarPend > 0) ...[
-          const SizedBox(height: 12),
-          Text('ATENCION: hay ' + mesasPend.toString() + ' mesa(s) con cuenta sin cobrar y ' +
-               llevarPend.toString() + ' pedido(s) para llevar abiertos. Si continuas, se descartan sin cobrar.',
-            style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600, fontSize: 13)),
+  void _cierreDeCaja(BuildContext context) {
+    // Mesas con cuenta abierta que todavia NO se han cobrado
+    final mesasPend = store.tables.where((t) {
+      final s = store.tableStatus(t.number);
+      return s != 'disponible' && s != 'pago_espera' && s != 'pago_servido';
+    }).length;
+    // Pedidos para llevar sin cobrar
+    final llevarPend = store.takeaways.where((t) => t.status != 'pagada').length;
+
+    // No se puede cerrar la caja si queda algo sin cobrar
+    if (mesasPend > 0 || llevarPend > 0) {
+      showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 40),
+        title: const Text('Todavia no puedes cerrar la caja'),
+        content: Text('Hay $mesasPend mesa(s) y $llevarPend pedido(s) para llevar sin cobrar.\n\n'
+            'Cobra o anula todo antes de cerrar la caja.'),
+        actions: [
+          FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Entendido')),
         ],
-      ]),
+      ));
+      return;
+    }
+
+    // Todo cobrado: mostrar el reporte de caja y confirmar el reinicio
+    final byMethod = store.byMethodToday();
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      icon: const Icon(Icons.point_of_sale, color: kPrimary, size: 40),
+      title: const Text('Cierre de caja'),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Resumen de ventas de hoy', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        Text('Total vendido: ${dualUsd(store.todayTotalUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+        Text('${store.todaySales.length} cuentas cobradas'),
+        const SizedBox(height: 10),
+        if (byMethod.isEmpty) const Text('Sin ventas registradas hoy', style: TextStyle(color: Colors.grey))
+        else ...[
+          const Text('Por medio de pago:', style: TextStyle(fontWeight: FontWeight.w600)),
+          for (final e in byMethod.entries) Padding(padding: const EdgeInsets.only(top: 2),
+            child: Text('- ${e.key}: ${dualUsd(e.value)}')),
+        ],
+        const SizedBox(height: 12),
+        const Text('Al cerrar la caja se reinician mesas, pedidos y comandas. Las ventas y el historial NO se borran.',
+          style: TextStyle(fontSize: 12, color: Colors.grey)),
+      ])),
       actions: [
         TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
-        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: kPrimary),
           onPressed: () async {
             Navigator.pop(dctx);
             await store.cierreDeTurno();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Turno cerrado. Todo listo para el siguiente turno.')));
+                const SnackBar(content: Text('Caja cerrada. Mesas, pedidos y comandas reiniciados.')));
             }
-          }, child: const Text('Cerrar turno')),
+          }, child: const Text('Cerrar caja')),
       ],
     ));
   }
@@ -1880,9 +1907,9 @@ class _AdminScreenState extends State<AdminScreen> {
         const SizedBox(height: 16),
         SizedBox(width: double.infinity, height: 48, child: OutlinedButton.icon(
           style: OutlinedButton.styleFrom(foregroundColor: Colors.red, side: const BorderSide(color: Colors.red)),
-          onPressed: () => _cierreDeTurno(context),
-          icon: const Icon(Icons.restart_alt), label: const Text('Cierre de turno'))),
-        const Text('Libera mesas y limpia cocina para el siguiente turno. No borra ventas.',
+          onPressed: () => _cierreDeCaja(context),
+          icon: const Icon(Icons.point_of_sale), label: const Text('Cierre de caja'))),
+        const Text('Muestra el reporte del dia y reinicia mesas, pedidos y comandas. Solo cuando todo este cobrado. No borra las ventas.',
           textAlign: TextAlign.center, style: TextStyle(fontSize: 11, color: Colors.grey)),
         if (store.lowStock.isNotEmpty) ...[lowStockCard(), const SizedBox(height: 12)],
         const Divider(height: 28),
@@ -2479,7 +2506,7 @@ class Cancellation {
         (r['merchandise_used'] ?? false) as bool,
         ((r['value_usd'] ?? 0) as num).toDouble(),
         (r['by_user'] ?? '') as String,
-        DateTime.tryParse((r['at'] ?? '') as String) ?? DateTime.now(),
+        (DateTime.tryParse((r['at'] ?? '') as String)?.toLocal()) ?? DateTime.now(),
       );
 }
 
@@ -2963,10 +2990,10 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
     if (nuevo != rep) { setState(() => _err = 'Los PIN nuevos no coinciden'); return; }
     if (nuevo == actual) { setState(() => _err = 'El PIN nuevo debe ser distinto al actual'); return; }
     setState(() { _saving = true; _err = null; });
-    final ok = await store.cambiarMiPin(actual, nuevo);
+    final err = await store.cambiarMiPin(actual, nuevo);
     if (!mounted) return;
     setState(() => _saving = false);
-    if (!ok) { setState(() => _err = 'El PIN actual no es correcto'); return; }
+    if (err != null) { setState(() => _err = err); return; }
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('PIN actualizado. Usalo la proxima vez que entres.')));
     Navigator.pop(context);
