@@ -2430,7 +2430,9 @@ class Ingredient {
   double minStock;
   double cost;
   Currency costCurrency;
-  Ingredient(this.id, this.name, this.unit, this.stock, this.minStock, {this.cost = 0, this.costCurrency = Currency.usd});
+  String kind;
+  String emoji;
+  Ingredient(this.id, this.name, this.unit, this.stock, this.minStock, {this.cost = 0, this.costCurrency = Currency.usd, this.kind = 'comida', this.emoji = '📦'});
   factory Ingredient.fromRow(Map<String, dynamic> r) => Ingredient(
         r['id'] as String,
         (r['name'] ?? '') as String,
@@ -2439,8 +2441,10 @@ class Ingredient {
         ((r['min_stock'] ?? 0) as num).toDouble(),
         cost: ((r['cost'] ?? 0) as num).toDouble(),
         costCurrency: curFrom((r['cost_currency'] ?? 'usd') as String),
+        kind: (r['kind'] ?? 'comida') as String,
+        emoji: (r['emoji'] ?? '📦') as String,
       );
-  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'unit': unit, 'stock': stock, 'min_stock': minStock, 'cost': cost, 'cost_currency': curStr(costCurrency)};
+  Map<String, dynamic> toRow() => <String, dynamic>{'name': name, 'unit': unit, 'stock': stock, 'min_stock': minStock, 'cost': cost, 'cost_currency': curStr(costCurrency), 'kind': kind, 'emoji': emoji};
   bool get low => stock <= minStock;
 }
 
@@ -2472,16 +2476,18 @@ class InventoryScreen extends StatelessWidget {
           if (list.isEmpty)
             const Padding(padding: EdgeInsets.all(24),
               child: Center(child: Text('Aun no hay ingredientes.\nToca "Nuevo" para agregar.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)))),
-          for (final i in list)
-            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: i.low ? Colors.red.shade100 : Colors.green.shade100,
-                child: Icon(Icons.restaurant, color: i.low ? Colors.red : Colors.green, size: 20)),
-              title: Text(i.name),
-              subtitle: Text('Stock: ${fmtQty(i.stock)} ${i.unit}  ·  minimo: ${fmtQty(i.minStock)} ${i.unit}', style: const TextStyle(fontSize: 12)),
-              trailing: i.low ? const Icon(Icons.error, color: Colors.red) : const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => IngredientForm(existing: i))),
-            )),
+          for (final grupo in const [['bebida', '🥤 Bebestibles'], ['comida', '🍔 Ingredientes de comida']])
+            if (list.any((i) => i.kind == grupo[0])) ...[
+              Padding(padding: const EdgeInsets.only(top: 6, bottom: 4), child: Text(grupo[1], style: const TextStyle(fontWeight: FontWeight.bold, color: kPrimary, fontSize: 15))),
+              for (final i in list.where((i) => i.kind == grupo[0]))
+                Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
+                  leading: Text(i.emoji, style: const TextStyle(fontSize: 26)),
+                  title: Text(i.name),
+                  subtitle: Text('Stock: ${fmtQty(i.stock)} ${i.unit}  ·  minimo: ${fmtQty(i.minStock)} ${i.unit}', style: const TextStyle(fontSize: 12)),
+                  trailing: i.low ? const Icon(Icons.error, color: Colors.red) : const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => IngredientForm(existing: i))),
+                )),
+            ],
         ]);
       }),
     );
@@ -2496,8 +2502,9 @@ class IngredientForm extends StatefulWidget {
 }
 class _IngredientFormState extends State<IngredientForm> {
   static const _units = ['kg', 'g', 'unidad', 'litro', 'ml', 'paquete', 'bolsa'];
-  late TextEditingController _name, _stock, _minStock, _cost;
+  late TextEditingController _name, _stock, _minStock, _cost, _emoji;
   late String _unit;
+  String _kind = 'comida';
   Currency _costCur = Currency.usd;
   bool _saving = false;
   @override
@@ -2511,9 +2518,11 @@ class _IngredientFormState extends State<IngredientForm> {
     if (!_units.contains(_unit)) _unit = 'kg';
     _cost = TextEditingController(text: e != null && e.cost > 0 ? fmtQty(e.cost) : '');
     _costCur = e?.costCurrency ?? Currency.usd;
+    _emoji = TextEditingController(text: e?.emoji ?? '📦');
+    _kind = e?.kind ?? 'comida';
   }
   @override
-  void dispose() { _name.dispose(); _stock.dispose(); _minStock.dispose(); _cost.dispose(); super.dispose(); }
+  void dispose() { _name.dispose(); _stock.dispose(); _minStock.dispose(); _cost.dispose(); _emoji.dispose(); super.dispose(); }
   Future<void> _save() async {
     if (_saving) return;
     final name = _name.text.trim();
@@ -2523,8 +2532,9 @@ class _IngredientFormState extends State<IngredientForm> {
     setState(() => _saving = true);
     final cost = double.tryParse(_cost.text.replaceAll(',', '.')) ?? 0;
     final e = widget.existing;
-    if (e != null) { e.name = name; e.unit = _unit; e.stock = stock; e.minStock = minStock; e.cost = cost; e.costCurrency = _costCur; await store.updateIngredient(e); }
-    else { await store.addIngredient(Ingredient('', name, _unit, stock, minStock, cost: cost, costCurrency: _costCur)); }
+    final emoji = _emoji.text.trim().isEmpty ? '📦' : _emoji.text.trim();
+    if (e != null) { e.name = name; e.unit = _unit; e.stock = stock; e.minStock = minStock; e.cost = cost; e.costCurrency = _costCur; e.kind = _kind; e.emoji = emoji; await store.updateIngredient(e); }
+    else { await store.addIngredient(Ingredient('', name, _unit, stock, minStock, cost: cost, costCurrency: _costCur, kind: _kind, emoji: emoji)); }
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -2544,7 +2554,18 @@ class _IngredientFormState extends State<IngredientForm> {
           }),
       ]),
       body: ListView(padding: const EdgeInsets.all(16), children: [
-        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre del ingrediente', hintText: 'Ej: Carne molida, Queso, Huevos', border: OutlineInputBorder())),
+        Row(children: [
+          SizedBox(width: 80, child: TextField(controller: _emoji, textAlign: TextAlign.center, decoration: const InputDecoration(labelText: 'Icono', border: OutlineInputBorder()))),
+          const SizedBox(width: 12),
+          Expanded(child: TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre', hintText: 'Ej: Carne, Queso, Refresco', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 12),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: 'comida', label: Text('Comida'), icon: Icon(Icons.restaurant)),
+            ButtonSegment(value: 'bebida', label: Text('Bebida'), icon: Icon(Icons.local_drink)),
+          ],
+          selected: {_kind}, onSelectionChanged: (s) => setState(() => _kind = s.first)),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(value: _unit,
           decoration: const InputDecoration(labelText: 'Unidad de medida', border: OutlineInputBorder()),
