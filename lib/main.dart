@@ -27,16 +27,28 @@ extension CurCode on Currency { String get code => this == Currency.usd ? 'USD' 
 Currency curFrom(String s) => s == 'ves' ? Currency.ves : Currency.usd;
 String curStr(Currency c) => c == Currency.usd ? 'usd' : 'ves';
 
-enum Cat { hamburguesas, perros, papas, bebidas, combos, otros }
-Cat catFrom(String s) => Cat.values.firstWhere((c) => c.name == s, orElse: () => Cat.otros);
-String catLabel(Cat c) => switch (c) {
-      Cat.hamburguesas => 'Hamburguesas',
-      Cat.perros => 'Perros calientes',
-      Cat.papas => 'Papas',
-      Cat.bebidas => 'Bebidas',
-      Cat.combos => 'Combos',
-      Cat.otros => 'Otros',
-    };
+// Categoria de producto (dinamica: el usuario la crea/edita/borra)
+class CatDef {
+  final String id;
+  final String key;
+  final String label;
+  final String emoji;
+  final int position;
+  final bool protected;
+  CatDef(this.id, this.key, this.label, this.emoji, this.position, this.protected);
+  factory CatDef.fromRow(Map<String, dynamic> r) => CatDef(
+        (r['id'] ?? '') as String,
+        (r['key'] ?? '') as String,
+        (r['label'] ?? '') as String,
+        (r['emoji'] ?? '🍽️') as String,
+        ((r['position'] ?? 100) as num).toInt(),
+        (r['protected'] ?? false) as bool,
+      );
+}
+String catLabel(String key) {
+  final c = store.categories.where((x) => x.key == key);
+  return c.isNotEmpty ? c.first.label : (key.isEmpty ? 'Otros' : key);
+}
 
 class Extra {
   String id;
@@ -54,7 +66,7 @@ class Product {
   String id;
   String name;
   String emoji;
-  Cat cat;
+  String cat;
   double price;
   Currency cur;
   List<Sz> sizes;
@@ -73,7 +85,7 @@ class Product {
         r['id'] as String,
         (r['name'] ?? '') as String,
         (r['emoji'] ?? '🍽️') as String,
-        catFrom((r['category'] ?? 'otros') as String),
+        (r['category'] ?? 'otros') as String,
         ((r['price'] ?? 0) as num).toDouble(),
         curFrom((r['currency'] ?? 'usd') as String),
         available: (r['available'] ?? true) as bool,
@@ -90,7 +102,7 @@ class Product {
   Map<String, dynamic> toRow() => <String, dynamic>{
         'name': name,
         'emoji': emoji,
-        'category': cat.name,
+        'category': cat,
         'price': price,
         'currency': curStr(cur),
         'available': available,
@@ -280,6 +292,8 @@ class Store extends ChangeNotifier {
   Map<String, List<AccLine>> takeawayAccounts = {};
   List<Sale> sales = [];
   List<CashClose> cashCloses = [];
+  List<CatDef> categories = [];
+  bool motivShown = true;
   List<Ingredient> ingredients = [];
   final List<String> methods = ['Efectivo Bs', 'Efectivo USD', 'Pago movil', 'Tarjeta'];
   final Map<String, List<CartItem>> _carts = {};
@@ -295,6 +309,7 @@ class Store extends ChangeNotifier {
       if (rows.isNotEmpty) {
         rate = ((rows.first['rate'] ?? 36.5) as num).toDouble();
         businessName = (rows.first['business_name'] ?? 'Puesto de Comida') as String;
+        motivShown = (rows.first['motiv_shown'] ?? true) as bool;
         connected = true; notifyListeners();
       }
     }, onError: _onErr);
@@ -335,6 +350,9 @@ class Store extends ChangeNotifier {
     }, onError: _onErr);
     sb.from('cash_closes').stream(primaryKey: ['id']).order('closed_at', ascending: false).listen((rows) {
       cashCloses = rows.map((r) => CashClose.fromRow(r)).toList(); notifyListeners();
+    }, onError: _onErr);
+    sb.from('categories').stream(primaryKey: ['id']).order('position').listen((rows) {
+      categories = rows.map((r) => CatDef.fromRow(r)).toList(); notifyListeners();
     }, onError: _onErr);
     sb.from('ingredients').stream(primaryKey: ['id']).order('name').listen((rows) {
       ingredients = rows.map((r) => Ingredient.fromRow(r)).toList(); notifyListeners();
@@ -572,6 +590,26 @@ class Store extends ChangeNotifier {
     }
   }
 
+  String _slug(String s) {
+    final base = s.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_').replaceAll(RegExp(r'^_+|_+$'), '');
+    return base.isEmpty ? 'cat_${DateTime.now().millisecondsSinceEpoch}' : base;
+  }
+  Future<void> addCategory(String label, String emoji) async {
+    if (label.trim().isEmpty) return;
+    final pos = categories.isEmpty ? 10 : categories.map((c) => c.position).reduce((a, b) => a > b ? a : b) + 10;
+    try { await sb.from('categories').insert(<String, dynamic>{'key': _slug(label), 'label': label.trim(), 'emoji': emoji.trim().isEmpty ? '🍽️' : emoji.trim(), 'position': pos, 'protected': false}); } catch (e) { _onErr(e); }
+  }
+  Future<void> updateCategory(String id, String label, String emoji) async {
+    try { await sb.from('categories').update(<String, dynamic>{'label': label.trim(), 'emoji': emoji.trim().isEmpty ? '🍽️' : emoji.trim()}).eq('id', id); } catch (e) { _onErr(e); }
+  }
+  Future<void> deleteCategory(CatDef c) async {
+    if (c.protected) return;
+    try {
+      await sb.from('products').update(<String, dynamic>{'category': 'otros'}).eq('category', c.key);
+      await sb.from('categories').delete().eq('id', c.id);
+    } catch (e) { _onErr(e); }
+  }
+
   int _nextTicketNumber() {
     var m = 0;
     for (final t in tickets) { if (t.number > m) m = t.number; }
@@ -593,6 +631,10 @@ class Store extends ChangeNotifier {
   Future<void> setBusinessName(String n) async {
     try { await sb.from('app_config').update(<String, dynamic>{'business_name': n, 'updated_at': DateTime.now().toIso8601String()}).eq('id', 1); }
     catch (e) { _onErr(e); }
+  }
+  Future<void> markMotivShown() async {
+    motivShown = true; notifyListeners();
+    try { await sb.from('app_config').update(<String, dynamic>{'motiv_shown': true}).eq('id', 1); } catch (e) { _onErr(e); }
   }
   Future<void> setRate(double r) async {
     try { await sb.from('app_config').update(<String, dynamic>{'rate': r, 'updated_at': DateTime.now().toIso8601String()}).eq('id', 1); }
@@ -1288,7 +1330,7 @@ class OrderScreen extends StatefulWidget {
   State<OrderScreen> createState() => _OrderScreenState();
 }
 class _OrderScreenState extends State<OrderScreen> {
-  Cat _cat = Cat.hamburguesas;
+  String _cat = '';
   bool _sending = false;
   bool _sentTakeaway = false;
   final _noteCtrl = TextEditingController();
@@ -1332,12 +1374,14 @@ class _OrderScreenState extends State<OrderScreen> {
       body: AnimatedBuilder(animation: store, builder: (context, _) {
         final items = store.cart(widget.cartKey);
         final total = store.cartTotalUsd(widget.cartKey);
+        final cats = store.categories;
+        if ((_cat.isEmpty || !cats.any((c) => c.key == _cat)) && cats.isNotEmpty) _cat = cats.first.key;
         final prods = store.products.where((p) => p.cat == _cat).toList();
         return Column(children: [
           lowStockWaiterBanner(),
           SizedBox(height: 52, child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 10), children: [
-            for (final c in Cat.values) Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Center(child: ChoiceChip(label: Text(catLabel(c)), selected: c == _cat, onSelected: (_) => setState(() => _cat = c)))),
+            for (final c in cats) Padding(padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Center(child: ChoiceChip(label: Text('${c.emoji} ${c.label}'), selected: c.key == _cat, onSelected: (_) => setState(() => _cat = c.key)))),
           ])),
           Expanded(child: prods.isEmpty
               ? const Center(child: Text('Sin productos en esta categoria', style: TextStyle(color: Colors.grey)))
@@ -1841,6 +1885,22 @@ class _AdminScreenState extends State<AdminScreen> {
   final _bizName = TextEditingController();
   final _rateFocus = FocusNode();
   void _syncRate() { if (!_rateFocus.hasFocus) _rate.text = store.rate.toStringAsFixed(2); }
+  bool _motivDone = false;
+  void _checkMotiv() {
+    if (_motivDone || store.motivShown || !mounted) return;
+    _motivDone = true;
+    store.markMotivShown();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+        icon: const Icon(Icons.favorite, color: kPrimary, size: 48),
+        title: const Text('Ángel David'),
+        content: const Text('Esto que construiste es prueba de lo que eres capaz. '
+            'No te rindas nunca con tus metas. Y en los días difíciles, cuando pese, no cargues solo: '
+            'llama a tu tío, que siempre estará para ti. 💪'),
+        actions: [FilledButton(onPressed: () => Navigator.pop(dctx), child: const Text('Gracias'))]));
+    });
+  }
 
   void _cierreDeCaja(BuildContext context) {
     // Mesas con cuenta abierta que todavia NO se han cobrado
@@ -1901,9 +1961,9 @@ class _AdminScreenState extends State<AdminScreen> {
     ));
   }
   @override
-  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; store.addListener(_syncRate); }
+  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; store.addListener(_syncRate); store.addListener(_checkMotiv); WidgetsBinding.instance.addPostFrameCallback((_) => _checkMotiv()); }
   @override
-  void dispose() { store.removeListener(_syncRate); _rateFocus.dispose(); _rate.dispose(); _bizName.dispose(); super.dispose(); }
+  void dispose() { store.removeListener(_syncRate); store.removeListener(_checkMotiv); _rateFocus.dispose(); _rate.dispose(); _bizName.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1958,6 +2018,10 @@ class _AdminScreenState extends State<AdminScreen> {
           icon: const Icon(Icons.calendar_month), label: const Text('Historial de dias'))),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CategoriesScreen())),
+          icon: const Icon(Icons.category), label: const Text('Categorias'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InventoryScreen())),
           icon: const Icon(Icons.inventory_2), label: const Text('Inventario de ingredientes'))),
         const SizedBox(height: 8),
@@ -1994,10 +2058,10 @@ class _AdminScreenState extends State<AdminScreen> {
         const Text('Productos y precios (toca para editar)', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (store.products.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Cargando productos...', style: TextStyle(color: Colors.grey))),
-        for (final c in Cat.values) ...[
-          if (store.products.any((p) => p.cat == c)) ...[
-            Padding(padding: const EdgeInsets.only(top: 8, bottom: 4), child: Text(catLabel(c), style: const TextStyle(fontWeight: FontWeight.bold, color: kPrimary))),
-            for (final p in store.products.where((p) => p.cat == c))
+        for (final c in store.categories) ...[
+          if (store.products.any((p) => p.cat == c.key)) ...[
+            Padding(padding: const EdgeInsets.only(top: 8, bottom: 4), child: Text('${c.emoji} ${c.label}', style: const TextStyle(fontWeight: FontWeight.bold, color: kPrimary))),
+            for (final p in store.products.where((p) => p.cat == c.key))
               Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(
                 leading: Text(p.emoji, style: const TextStyle(fontSize: 24)),
                 title: Text(p.name),
@@ -2020,7 +2084,7 @@ class ProductForm extends StatefulWidget {
 }
 class _ProductFormState extends State<ProductForm> {
   late TextEditingController _name, _emoji, _price, _quita, _stock, _minStock;
-  late Cat _cat;
+  late String _cat;
   late Currency _cur;
   late bool _available, _useSizes, _track;
   final List<List<TextEditingController>> _extras = [];
@@ -2035,7 +2099,7 @@ class _ProductFormState extends State<ProductForm> {
     _emoji = TextEditingController(text: e?.emoji ?? '🍽️');
     _price = TextEditingController(text: e != null ? e.price.toStringAsFixed(2) : '');
     _quita = TextEditingController(text: e?.quita.join(', ') ?? '');
-    _cat = e?.cat ?? Cat.hamburguesas;
+    _cat = e?.cat ?? (store.categories.isNotEmpty ? store.categories.first.key : 'otros');
     _cur = e?.cur ?? Currency.usd;
     _available = e?.available ?? true;
     _useSizes = e != null && e.sizes.isNotEmpty;
@@ -2089,11 +2153,11 @@ class _ProductFormState extends State<ProductForm> {
       e.name = name; e.emoji = emoji; e.cat = _cat; e.price = price; e.cur = _cur;
       e.available = _available; e.sizes = sizes; e.extras = extras; e.quita = quita;
       e.stock = 0; e.minStock = 0; e.trackStock = false;
-      e.recipe = _cat == Cat.combos ? <RecipeItem>[] : recipe;
-      e.comboItems = _cat == Cat.combos ? comboItems : <ComboItem>[];
+      e.recipe = _cat == 'combos' ? <RecipeItem>[] : recipe;
+      e.comboItems = _cat == 'combos' ? comboItems : <ComboItem>[];
       await store.updateProduct(e);
     } else {
-      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: 0, minStock: 0, trackStock: false, recipe: _cat == Cat.combos ? <RecipeItem>[] : recipe, comboItems: _cat == Cat.combos ? comboItems : <ComboItem>[]));
+      await store.addProduct(Product('', name, emoji, _cat, price, _cur, sizes: sizes, extras: extras, quita: quita, available: _available, stock: 0, minStock: 0, trackStock: false, recipe: _cat == 'combos' ? <RecipeItem>[] : recipe, comboItems: _cat == 'combos' ? comboItems : <ComboItem>[]));
     }
     if (!mounted) return;
     Navigator.pop(context);
@@ -2123,10 +2187,10 @@ class _ProductFormState extends State<ProductForm> {
         Row(children: [
           SizedBox(width: 90, child: TextField(controller: _emoji, textAlign: TextAlign.center, decoration: const InputDecoration(labelText: 'Icono', border: OutlineInputBorder()))),
           const SizedBox(width: 12),
-          Expanded(child: DropdownButtonFormField<Cat>(value: _cat,
+          Expanded(child: DropdownButtonFormField<String>(value: store.categories.any((c) => c.key == _cat) ? _cat : null,
             decoration: const InputDecoration(labelText: 'Categoria', border: OutlineInputBorder()),
-            items: [for (final c in Cat.values) DropdownMenuItem(value: c, child: Text(catLabel(c)))],
-            onChanged: (v) => setState(() => _cat = v ?? Cat.otros))),
+            items: [for (final c in store.categories) DropdownMenuItem(value: c.key, child: Text('${c.emoji} ${c.label}'))],
+            onChanged: (v) => setState(() => _cat = v ?? 'otros'))),
         ]),
         const SizedBox(height: 12),
         Row(children: [
@@ -2154,7 +2218,7 @@ class _ProductFormState extends State<ProductForm> {
             IconButton(icon: const Icon(Icons.remove_circle_outline, color: Colors.red), onPressed: () => setState(() { _extras[i][0].dispose(); _extras[i][1].dispose(); _extras.removeAt(i); })),
           ])),
         const Divider(height: 24),
-        if (_cat == Cat.combos) ...[
+        if (_cat == 'combos') ...[
           Row(children: [
             const Expanded(child: Text('Componentes del combo', style: TextStyle(fontWeight: FontWeight.bold))),
             TextButton.icon(onPressed: () => setState(() => _comboRows.add(_CRow(null, TextEditingController(text: '1')))), icon: const Icon(Icons.add), label: const Text('Agregar')),
@@ -2163,10 +2227,10 @@ class _ProductFormState extends State<ProductForm> {
           for (var i = 0; i < _comboRows.length; i++)
             Padding(padding: const EdgeInsets.only(top: 8), child: Row(children: [
               Expanded(flex: 3, child: DropdownButtonFormField<String>(
-                value: store.products.any((x) => x.id == _comboRows[i].productId && x.cat != Cat.combos) ? _comboRows[i].productId : null,
+                value: store.products.any((x) => x.id == _comboRows[i].productId && x.cat != 'combos') ? _comboRows[i].productId : null,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Producto', isDense: true, border: OutlineInputBorder()),
-                items: [for (final pr in store.products.where((x) => x.cat != Cat.combos)) DropdownMenuItem(value: pr.id, child: Text(pr.name, overflow: TextOverflow.ellipsis))],
+                items: [for (final pr in store.products.where((x) => x.cat != 'combos')) DropdownMenuItem(value: pr.id, child: Text(pr.name, overflow: TextOverflow.ellipsis))],
                 onChanged: (v) => setState(() => _comboRows[i].productId = v))),
               const SizedBox(width: 8),
               SizedBox(width: 64, child: TextField(controller: _comboRows[i].qty, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Cant.', isDense: true, border: OutlineInputBorder()))),
@@ -2204,6 +2268,63 @@ class _ProductFormState extends State<ProductForm> {
 }
 
 // ======================= HISTORIAL DEL DIA =======================
+class CategoriesScreen extends StatelessWidget {
+  const CategoriesScreen({super.key});
+  void _editar(BuildContext context, {CatDef? c}) {
+    final nombre = TextEditingController(text: c?.label ?? '');
+    final emoji = TextEditingController(text: c?.emoji ?? '🍽️');
+    showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+      title: Text(c == null ? 'Nueva categoria' : 'Editar categoria'),
+      content: Row(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox(width: 70, child: TextField(controller: emoji, textAlign: TextAlign.center, decoration: const InputDecoration(labelText: 'Icono', border: OutlineInputBorder()))),
+        const SizedBox(width: 10),
+        Expanded(child: TextField(controller: nombre, decoration: const InputDecoration(labelText: 'Nombre', border: OutlineInputBorder()))),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+        FilledButton(onPressed: () async {
+          final n = nombre.text.trim();
+          if (n.isEmpty) return;
+          if (c == null) { await store.addCategory(n, emoji.text); } else { await store.updateCategory(c.id, n, emoji.text); }
+          if (dctx.mounted) Navigator.pop(dctx);
+        }, child: const Text('Guardar')),
+      ],
+    ));
+  }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Categorias')),
+      floatingActionButton: FloatingActionButton.extended(onPressed: () => _editar(context), icon: const Icon(Icons.add), label: const Text('Nueva')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final cats = store.categories;
+        return ListView(padding: const EdgeInsets.all(12), children: [
+          const Padding(padding: EdgeInsets.only(bottom: 8), child: Text('Toca el lapiz para editar. Las que tienen candado son fijas del sistema y no se borran.', style: TextStyle(fontSize: 12, color: Colors.grey))),
+          for (final c in cats)
+            Card(child: ListTile(
+              leading: Text(c.emoji, style: const TextStyle(fontSize: 26)),
+              title: Text(c.label),
+              subtitle: Text('${store.products.where((p) => p.cat == c.key).length} productos'),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton(icon: const Icon(Icons.edit), onPressed: () => _editar(context, c: c)),
+                if (c.protected) const Padding(padding: EdgeInsets.only(right: 8), child: Icon(Icons.lock, size: 18, color: Colors.grey))
+                else IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () {
+                  showDialog<void>(context: context, builder: (dctx) => AlertDialog(
+                    title: Text('Borrar "${c.label}"?'),
+                    content: const Text('Los productos de esta categoria pasaran a "Otros". No se borra ningun producto.'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancelar')),
+                      FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () async { Navigator.pop(dctx); await store.deleteCategory(c); }, child: const Text('Borrar')),
+                    ]));
+                }),
+              ]),
+            )),
+        ]);
+      }),
+    );
+  }
+}
+
 class HistoryDaysScreen extends StatelessWidget {
   const HistoryDaysScreen({super.key});
   @override
