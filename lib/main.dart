@@ -111,10 +111,12 @@ class CartItem {
   Sz? size;
   Set<String> extras;
   Set<String> quita;
+  Set<String> quitaIng;
   String? note;
-  CartItem(this.p, {this.qty = 1, this.size, Set<String>? extras, Set<String>? quita, this.note})
+  CartItem(this.p, {this.qty = 1, this.size, Set<String>? extras, Set<String>? quita, Set<String>? quitaIng, this.note})
       : extras = extras ?? {},
-        quita = quita ?? {};
+        quita = quita ?? {},
+        quitaIng = quitaIng ?? {};
   double unit() {
     var t = p.price + (size?.delta ?? 0);
     for (final e in p.extras) { if (extras.contains(e.id)) t += e.price; }
@@ -553,7 +555,7 @@ class Store extends ChangeNotifier {
     }
     return c;
   }
-  Future<void> _consume(Product p, double q) async {
+  Future<void> _consume(Product p, double q, {Set<String> skip = const <String>{}}) async {
     if (p.comboItems.isNotEmpty) {
       for (final c in p.comboItems) {
         final cp = productById(c.productId);
@@ -563,6 +565,7 @@ class Store extends ChangeNotifier {
     }
     if (p.recipe.isNotEmpty) {
       for (final r in p.recipe) {
+        if (skip.contains(r.ingredientId)) continue;
         await sb.rpc('deduct_ingredient', params: <String, dynamic>{'i_id': r.ingredientId, 'i_qty': r.qty * q});
       }
       return;
@@ -649,8 +652,12 @@ class Store extends ChangeNotifier {
     }
     final adicion = numeroSesion != null;
     List<String> exNames(CartItem it) => [for (final e in it.p.extras) if (it.extras.contains(e.id)) e.name];
+    List<String> quitaNames(CartItem it) => [
+      ...it.quita,
+      for (final id in it.quitaIng) if (ingredientById(id) != null) ingredientById(id)!.name,
+    ];
     final lines = [for (final it in items) <String, dynamic>{
-      'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note,
+      'name': it.p.name, 'qty': it.qty, 'size': it.size?.name, 'extras': exNames(it), 'quita': quitaNames(it), 'note': it.note,
     }];
     try {
       final tRes = await sb.from('tickets').insert(<String, dynamic>{
@@ -663,7 +670,7 @@ class Store extends ChangeNotifier {
       if (table != null || takeawayId != null) {
         final accRows = [for (final it in items) <String, dynamic>{
           'table_number': table, 'takeaway_id': takeawayId, 'ticket_id': ticketId, 'product_name': it.p.name, 'qty': it.qty, 'size': it.size?.name,
-          'extras': exNames(it), 'quita': it.quita.toList(), 'note': it.note, 'unit_usd': toUsd(it.unit(), it.p.cur),
+          'extras': exNames(it), 'quita': quitaNames(it), 'note': it.note, 'unit_usd': toUsd(it.unit(), it.p.cur),
         }];
         await sb.from('account_items').insert(accRows);
       }
@@ -671,7 +678,7 @@ class Store extends ChangeNotifier {
         await sb.from('dining_tables').update(<String, dynamic>{'status': 'ocupada', 'waiter': currentUser, 'opened_at': DateTime.now().toIso8601String()}).eq('number', table);
       }
       for (final it in items) {
-        await _consume(it.p, it.qty.toDouble());
+        await _consume(it.p, it.qty.toDouble(), skip: it.quitaIng);
       }
       if (!keepCart) items.clear();
       notifyListeners();
@@ -1408,6 +1415,7 @@ class _ItemEditorState extends State<ItemEditor> {
   late int _qty;
   late Set<String> _extras;
   late Set<String> _quita;
+  late Set<String> _quitaIng;
   late TextEditingController _note;
   @override
   void initState() {
@@ -1418,6 +1426,7 @@ class _ItemEditorState extends State<ItemEditor> {
     _qty = e?.qty ?? 1;
     _extras = {...?e?.extras};
     _quita = {...?e?.quita};
+    _quitaIng = {...?e?.quitaIng};
     _note = TextEditingController(text: e?.note ?? '');
   }
   @override
@@ -1431,8 +1440,8 @@ class _ItemEditorState extends State<ItemEditor> {
   void _confirm() {
     final e = widget.existing;
     final note = _note.text.trim().isEmpty ? null : _note.text.trim();
-    if (e != null) { e.size = _size; e.qty = _qty; e.extras = _extras; e.quita = _quita; e.note = note; Navigator.pop(context, e); }
-    else { Navigator.pop(context, CartItem(widget.product, qty: _qty, size: _size, extras: _extras, quita: _quita, note: note)); }
+    if (e != null) { e.size = _size; e.qty = _qty; e.extras = _extras; e.quita = _quita; e.quitaIng = _quitaIng; e.note = note; Navigator.pop(context, e); }
+    else { Navigator.pop(context, CartItem(widget.product, qty: _qty, size: _size, extras: _extras, quita: _quita, quitaIng: _quitaIng, note: note)); }
   }
   @override
   Widget build(BuildContext context) {
@@ -1459,8 +1468,22 @@ class _ItemEditorState extends State<ItemEditor> {
                   onChanged: (v) => setState(() => v == true ? _extras.add(ex.id) : _extras.remove(ex.id))),
               const SizedBox(height: 12),
             ],
+            if (p.recipe.isNotEmpty) ...[
+              const Text('Quitar ingredientes', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text('Lo que quites no se descuenta del inventario', style: TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, children: [
+                for (final r in p.recipe)
+                  if (store.ingredientById(r.ingredientId) != null)
+                    FilterChip(
+                      label: Text('Sin ${store.ingredientById(r.ingredientId)!.name}'),
+                      selected: _quitaIng.contains(r.ingredientId),
+                      onSelected: (v) => setState(() => v ? _quitaIng.add(r.ingredientId) : _quitaIng.remove(r.ingredientId))),
+              ]),
+              const SizedBox(height: 16),
+            ],
             if (p.quita.isNotEmpty) ...[
-              const Text('Quitar ingredientes', style: TextStyle(fontWeight: FontWeight.w600)), const SizedBox(height: 8),
+              const Text('Quitar (personalizado)', style: TextStyle(fontWeight: FontWeight.w600)), const SizedBox(height: 8),
               Wrap(spacing: 8, children: [for (final ing in p.quita) FilterChip(label: Text('Sin $ing'), selected: _quita.contains(ing), onSelected: (v) => setState(() => v ? _quita.add(ing) : _quita.remove(ing)))]),
               const SizedBox(height: 16),
             ],
@@ -1816,6 +1839,8 @@ class AdminScreen extends StatefulWidget {
 class _AdminScreenState extends State<AdminScreen> {
   final _rate = TextEditingController();
   final _bizName = TextEditingController();
+  final _rateFocus = FocusNode();
+  void _syncRate() { if (!_rateFocus.hasFocus) _rate.text = store.rate.toStringAsFixed(2); }
 
   void _cierreDeCaja(BuildContext context) {
     // Mesas con cuenta abierta que todavia NO se han cobrado
@@ -1876,9 +1901,9 @@ class _AdminScreenState extends State<AdminScreen> {
     ));
   }
   @override
-  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; }
+  void initState() { super.initState(); _rate.text = store.rate.toStringAsFixed(2); _bizName.text = store.businessName; store.addListener(_syncRate); }
   @override
-  void dispose() { _rate.dispose(); _bizName.dispose(); super.dispose(); }
+  void dispose() { store.removeListener(_syncRate); _rateFocus.dispose(); _rate.dispose(); _bizName.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1908,7 +1933,7 @@ class _AdminScreenState extends State<AdminScreen> {
         const SizedBox(height: 8),
         Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
           const Text('1 USD =  ', style: TextStyle(fontWeight: FontWeight.bold)),
-          Expanded(child: TextField(controller: _rate, keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          Expanded(child: TextField(controller: _rate, focusNode: _rateFocus, keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: const InputDecoration(suffixText: 'Bs', isDense: true, border: OutlineInputBorder()))),
           const SizedBox(width: 8),
           FilledButton(onPressed: () async {
