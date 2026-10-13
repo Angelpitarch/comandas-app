@@ -10,7 +10,7 @@ en tiempo real entre dispositivos.
 |---|---|
 | **Mesero** | Solo atiende mesas y pedidos para llevar: toma pedidos, los envía a cocina, cobra y libera la mesa. No ve ventas, caja, gastos ni empleados. |
 | **Cocina** | Solo ve las comandas y cambia su estado (nueva → preparando → lista). No puede anular ni modificar el contenido de una comanda (lo impide un disparador en la base de datos). |
-| **Administrador** | Todo: usuarios y roles, menú, inventario, categorías, tasa, caja, anulaciones, empleados, gastos e historial. También puede abrir las pantallas de Mesero y de Cocina. |
+| **Administrador** | Todo: usuarios y roles, menú, inventario, categorías, tasa, caja, anulaciones, empleados, gastos (con su descuento en Rentabilidad) e historial. También puede abrir las pantallas de Mesero y de Cocina. |
 
 Esto se aplica **en la base de datos** (reglas RLS en `supabase/migrations/0002_seguridad_por_rol.sql`),
 no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo que su rol no permite.

@@ -1,7 +1,7 @@
 name: comandas_app
 description: "Sistema de comandas para puesto de comida (nube + actualizaciones por el aire)."
 publish_to: 'none'
-version: 0.6.0+7
+version: 0.6.1+8
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
