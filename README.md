@@ -10,7 +10,7 @@ en tiempo real entre dispositivos.
 |---|---|
 | **Mesero** | Solo atiende mesas y pedidos para llevar: toma pedidos, los envía a cocina, cobra y libera la mesa. No ve ventas, caja, gastos ni empleados. |
 | **Cocina** | Solo ve las comandas y cambia su estado (nueva → preparando → lista). No puede anular ni modificar el contenido de una comanda (lo impide un disparador en la base de datos). |
-| **Administrador** | Todo: usuarios y roles, menú, inventario, categorías, tasa, caja, anulaciones, empleados, gastos (con su descuento en Rentabilidad) e historial. También puede abrir las pantallas de Mesero y de Cocina. |
+| **Administrador** | Todo: usuarios y roles, menú, inventario, categorías, tasa, caja, anulaciones, empleados, gastos (se descuentan en Rentabilidad, cierre de caja y reportes), reportes por semana y mes e historial. También puede abrir las pantallas de Mesero y de Cocina. |
 
 Esto se aplica **en la base de datos** (reglas RLS en `supabase/migrations/0002_seguridad_por_rol.sql`),
 no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo que su rol no permite.
@@ -18,7 +18,7 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql` y `0004_cocina_solo_estado.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` y `0005_cierre_con_gastos.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
@@ -64,7 +64,7 @@ Secretos necesarios en GitHub (Settings → Secrets): `SHOREBIRD_TOKEN` y, para 
 
 ```
 lib/main.dart                         Toda la app (un solo archivo)
-supabase/migrations/                  Esquema, seguridad por rol, datos iniciales y candado de cocina
+supabase/migrations/                  Esquema, seguridad por rol, datos iniciales candado de cocina y gastos en el cierre
 supabase/tests/prueba_roles.sql       Prueba de permisos por rol
 .github/workflows/build-apk.yml       Compilación del APK y parches Shorebird
 .github/workflows/backup.yml          Respaldo diario de la base de datos

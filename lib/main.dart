@@ -265,7 +265,8 @@ class CashClose {
   final int accountsCount;
   final Map<String, double> byMethod;
   final Map<String, int> units;
-  CashClose(this.closedAt, this.fromAt, this.totalUsd, this.accountsCount, this.byMethod, this.units);
+  final double gastosUsd;
+  CashClose(this.closedAt, this.fromAt, this.totalUsd, this.accountsCount, this.byMethod, this.units, {this.gastosUsd = 0});
   factory CashClose.fromRow(Map<String, dynamic> r) => CashClose(
         (DateTime.tryParse((r['closed_at'] ?? '') as String)?.toLocal()) ?? DateTime.now(),
         r['from_at'] != null ? DateTime.tryParse(r['from_at'] as String)?.toLocal() : null,
@@ -273,6 +274,7 @@ class CashClose {
         ((r['accounts_count'] ?? 0) as num).toInt(),
         {for (final e in ((r['by_method'] ?? <String, dynamic>{}) as Map).entries) e.key as String: ((e.value ?? 0) as num).toDouble()},
         {for (final e in ((r['units'] ?? <String, dynamic>{}) as Map).entries) e.key as String: ((e.value ?? 0) as num).toInt()},
+        gastosUsd: ((r['gastos_usd'] ?? 0) as num).toDouble(),
       );
 }
 
@@ -412,6 +414,7 @@ class Store extends ChangeNotifier {
         'accounts_count': ventas.length,
         'by_method': byMethod,
         'units': units,
+        'gastos_usd': todayGastosUsd,
       });
       await cierreDeTurno();
     } catch (e) { _onErr(e); }
@@ -572,9 +575,10 @@ class Store extends ChangeNotifier {
     return c;
   }
   double productProfitUsd(Product p) => toUsd(p.price, p.cur) - productCostUsd(p);
-  double get todayCostUsd {
+  double get todayCostUsd => salesCostUsd(todaySales);
+  double salesCostUsd(Iterable<Sale> list) {
     var c = 0.0;
-    for (final s in todaySales) {
+    for (final s in list) {
       for (final l in s.lines) {
         final ps = products.where((x) => x.name == l.name).toList();
         if (ps.isNotEmpty) c += productCostUsd(ps.first) * l.qty;
@@ -1920,6 +1924,11 @@ class _AdminScreenState extends State<AdminScreen> {
         const SizedBox(height: 6),
         Text('Total vendido: ${dualUsd(store.todayTotalUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
         Text('${store.todaySales.length} cuentas cobradas'),
+        if (store.todayGastosUsd > 0) ...[
+          const SizedBox(height: 6),
+          Text('Gastos del turno: ${dualUsd(store.todayGastosUsd)}'),
+          Text('Ventas menos gastos: ${dualUsd(store.todayTotalUsd - store.todayGastosUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+        ],
         const SizedBox(height: 10),
         if (byMethod.isEmpty) const Text('Sin ventas registradas hoy', style: TextStyle(color: Colors.grey))
         else ...[
@@ -2021,6 +2030,10 @@ class _AdminScreenState extends State<AdminScreen> {
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const GastosScreen())),
           icon: const Icon(Icons.receipt_long), label: const Text('Gastos'))),
+        const SizedBox(height: 8),
+        SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ReportesScreen())),
+          icon: const Icon(Icons.bar_chart), label: const Text('Reportes (semana / mes)'))),
         const SizedBox(height: 8),
         SizedBox(width: double.infinity, child: FilledButton.tonalIcon(
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EmployeesScreen())),
@@ -2338,6 +2351,10 @@ class HistoryDaysScreen extends StatelessWidget {
                 content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('Total: ${dualUsd(c.totalUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
                   Text('${c.accountsCount} cuentas cobradas'),
+                  if (c.gastosUsd > 0) ...[
+                    Text('Gastos: ${dualUsd(c.gastosUsd)}'),
+                    Text('Ventas menos gastos: ${dualUsd(c.totalUsd - c.gastosUsd)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ],
                   const SizedBox(height: 10),
                   const Text('Por medio de pago:', style: TextStyle(fontWeight: FontWeight.w600)),
                   if (c.byMethod.isEmpty) const Text('-', style: TextStyle(color: Colors.grey))
@@ -2378,6 +2395,11 @@ class HistoryScreen extends StatelessWidget {
               const SizedBox(height: 6),
               Text(dualUsd(store.todayTotalUsd), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               Text('${sales.length} cuentas cobradas'),
+              if (store.currentUserRole == 'admin' && store.todayGastosUsd > 0) ...[
+                const SizedBox(height: 4),
+                Text('Gastos: ${dualUsd(store.todayGastosUsd)}'),
+                Text('Ventas menos gastos: ${dualUsd(store.todayTotalUsd - store.todayGastosUsd)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              ],
             ]))),
           const SizedBox(height: 12),
           const Text('Por medio de pago', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -2613,6 +2635,10 @@ class DaySummaryScreen extends StatelessWidget {
             const Text('==============================', style: mono),
             Text('TOTAL: ${usd(total)}', style: mono.copyWith(fontWeight: FontWeight.bold, fontSize: 15)),
             Text('       ${ves(total * store.rate)}', style: mono.copyWith(fontWeight: FontWeight.bold)),
+            if (store.currentUserRole == 'admin' && store.todayGastosUsd > 0) ...[
+              Text('GASTOS: ${usd(store.todayGastosUsd)}  |  ${ves(store.todayGastosUsd * store.rate)}', style: mono),
+              Text('NETO: ${usd(total - store.todayGastosUsd)}', style: mono.copyWith(fontWeight: FontWeight.bold)),
+            ],
             Text('Cuentas cobradas: ${sales.length}', style: mono),
             Text('Tasa: ${ves(store.rate)} / \$', style: mono.copyWith(fontSize: 11)),
             const SizedBox(height: 14),
@@ -3157,6 +3183,128 @@ class _GastoFormState extends State<GastoForm> {
           icon: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.save),
           label: Text(_saving ? 'Guardando...' : 'Guardar gasto'))),
       ]),
+    );
+  }
+}
+
+
+// ======================= REPORTES (semana / mes) =======================
+class ReportesScreen extends StatefulWidget {
+  const ReportesScreen({super.key});
+  @override
+  State<ReportesScreen> createState() => _ReportesScreenState();
+}
+class _ReportesScreenState extends State<ReportesScreen> {
+  bool _semana = true;
+  int _offset = 0; // 0 = periodo actual, -1 = anterior, ...
+  static const _meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+  DateTime get _inicio {
+    final n = DateTime.now();
+    if (_semana) {
+      final lunes = DateTime(n.year, n.month, n.day - (n.weekday - 1));
+      return DateTime(lunes.year, lunes.month, lunes.day + 7 * _offset);
+    }
+    return DateTime(n.year, n.month + _offset, 1);
+  }
+  DateTime get _fin {
+    final i = _inicio;
+    return _semana ? DateTime(i.year, i.month, i.day + 7) : DateTime(i.year, i.month + 1, 1);
+  }
+  String get _titulo {
+    final i = _inicio;
+    if (!_semana) return '${_meses[i.month - 1]} ${i.year}';
+    final f = _fin.subtract(const Duration(days: 1));
+    return '${fecha(i)} al ${fecha(f)}';
+  }
+  void _cambiar(bool semana) => setState(() { _semana = semana; _offset = 0; });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Reportes')),
+      body: AnimatedBuilder(animation: store, builder: (context, _) {
+        final ini = _inicio, fin = _fin;
+        final ventas = store.sales.where((s) => !s.at.isBefore(ini) && s.at.isBefore(fin)).toList();
+        final gastos = store.gastos.where((g) => !g.at.isBefore(ini) && g.at.isBefore(fin)).toList();
+        final totalVentas = ventas.fold<double>(0, (a, s) => a + s.totalUsd);
+        final totalGastos = gastos.fold<double>(0, (a, g) => a + g.amountUsd);
+        final costo = store.salesCostUsd(ventas);
+        final ganancia = totalVentas - costo;
+        final neta = ganancia - totalGastos;
+        final porMetodo = <String, double>{};
+        final unidades = <String, int>{};
+        for (final s in ventas) {
+          for (final p in s.payments) { porMetodo[p.method] = (porMetodo[p.method] ?? 0) + p.amountUsd; }
+          for (final l in s.lines) { unidades[l.name] = (unidades[l.name] ?? 0) + l.qty; }
+        }
+        final topProductos = unidades.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+        // por dia
+        final dias = <String, List<double>>{}; // clave AAAA-MM-DD -> [ventas, gastos]
+        String key(DateTime d) => '${d.year}-${two(d.month)}-${two(d.day)}';
+        for (final s in ventas) { (dias[key(s.at)] ??= [0, 0])[0] += s.totalUsd; }
+        for (final g in gastos) { (dias[key(g.at)] ??= [0, 0])[1] += g.amountUsd; }
+        final diasOrd = dias.entries.toList()..sort((a, b) => b.key.compareTo(a.key));
+        Widget fila(String label, double v, {bool bold = false, Color? color}) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(children: [
+                Text(label, style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+                const Spacer(),
+                Text(dualUsd(v), style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.w500, color: color)),
+              ]));
+        return ListView(padding: const EdgeInsets.all(16), children: [
+          SegmentedButton<bool>(
+            segments: const [ButtonSegment(value: true, label: Text('Semana')), ButtonSegment(value: false, label: Text('Mes'))],
+            selected: {_semana},
+            onSelectionChanged: (v) => _cambiar(v.first)),
+          const SizedBox(height: 8),
+          Row(children: [
+            IconButton(onPressed: () => setState(() => _offset--), icon: const Icon(Icons.chevron_left)),
+            Expanded(child: Text(_titulo, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+            IconButton(onPressed: _offset >= 0 ? null : () => setState(() => _offset++), icon: const Icon(Icons.chevron_right)),
+          ]),
+          const SizedBox(height: 4),
+          Card(color: Colors.green.shade50, child: Padding(padding: const EdgeInsets.all(14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              fila('Ventas', totalVentas, bold: true),
+              fila('Costo estimado', costo),
+              const Divider(),
+              fila('Ganancia', ganancia),
+              fila('Gastos', totalGastos),
+              const Divider(),
+              fila('Ganancia neta', neta, bold: true, color: neta >= 0 ? Colors.green.shade800 : Colors.red),
+              const SizedBox(height: 4),
+              Text('${ventas.length} cuentas cobradas', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            ]))),
+          const SizedBox(height: 4),
+          const Text('El costo usa los precios de compra actuales de los ingredientes, no los de esa fecha. '
+              'Los montos en Bs usan la tasa de hoy.', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          const Divider(height: 24),
+          const Text('Por dia', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          if (diasOrd.isEmpty) const Text('Sin movimientos en este periodo', style: TextStyle(color: Colors.grey))
+          else for (final e in diasOrd)
+            Card(margin: const EdgeInsets.only(bottom: 6), child: ListTile(dense: true,
+              title: Text(() { final p = e.key.split('-'); return '${p[2]}/${p[1]}/${p[0]}'; }()),
+              subtitle: Text('Ventas ${usd(e.value[0])}  ·  Gastos ${usd(e.value[1])}', style: const TextStyle(fontSize: 12)),
+              trailing: Text(usd(e.value[0] - e.value[1]), style: TextStyle(fontWeight: FontWeight.bold, color: e.value[0] - e.value[1] >= 0 ? Colors.green.shade700 : Colors.red)))),
+          const Divider(height: 24),
+          const Text('Por medio de pago', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          if (porMetodo.isEmpty) const Text('Sin ventas', style: TextStyle(color: Colors.grey))
+          else for (final e in porMetodo.entries)
+            ListTile(dense: true, contentPadding: EdgeInsets.zero, leading: const Icon(Icons.payments), title: Text(e.key),
+              trailing: Text(dualUsd(e.value), style: const TextStyle(fontWeight: FontWeight.w600))),
+          const Divider(height: 24),
+          const Text('Productos mas vendidos', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          if (topProductos.isEmpty) const Text('Sin ventas', style: TextStyle(color: Colors.grey))
+          else for (final e in topProductos.take(10))
+            ListTile(dense: true, contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(radius: 15, backgroundColor: Colors.orange.shade50, child: Text('${e.value}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+              title: Text(e.key)),
+        ]);
+      }),
     );
   }
 }
