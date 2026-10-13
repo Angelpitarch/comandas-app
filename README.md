@@ -18,7 +18,7 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` `0005_cierre_con_gastos.sql` y `0006_avisos_push.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` `0005_cierre_con_gastos.sql`, `0006_avisos_push.sql` y `0007_disparador_avisos.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
