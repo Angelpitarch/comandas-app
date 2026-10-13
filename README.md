@@ -18,7 +18,7 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` y `0005_cierre_con_gastos.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` `0005_cierre_con_gastos.sql` y `0006_avisos_push.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
@@ -44,6 +44,15 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
   y mantén los límites de inicio de sesión activos.
 - Nunca subas al repositorio llaves `service_role`, contraseñas ni archivos `.env`.
   La llave `sb_publishable_...` que está en `lib/main.dart` sí es pública por diseño.
+
+## Avisos con la app cerrada (Firebase)
+
+Cocina y administrador reciben un aviso en el celular cuando entra una comanda nueva, aunque la app
+este cerrada. Piezas: la app (registra el celular al iniciar sesion), la tabla `device_tokens`
+(`0006_avisos_push.sql`), la funcion `supabase/functions/notify-comanda` y un disparador en la base de
+datos que la llama. Secretos en Supabase (nunca en el repositorio): `WEBHOOK_SECRET` y
+`FCM_SERVICE_ACCOUNT` (JSON de la cuenta de servicio de Firebase). Los datos de `kFirebaseOptions`
+en `lib/main.dart` son publicos por diseno.
 
 ## Compilar el APK
 

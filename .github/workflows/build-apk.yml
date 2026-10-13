@@ -60,6 +60,20 @@ jobs:
             sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' "$MANIFEST"
           fi
 
+      - name: Permiso de notificaciones y minSdk para Firebase
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "android.permission.POST_NOTIFICATIONS" "$MANIFEST"; then
+            sed -i 's#<application#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application#' "$MANIFEST"
+          fi
+          # Firebase pide minSdk 23 o mas: se usa el mayor entre el de Flutter y 23
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's#minSdk = flutter.minSdkVersion#minSdk = maxOf(flutter.minSdkVersion, 23)#' android/app/build.gradle.kts
+          elif [ -f android/app/build.gradle ]; then
+            sed -i 's#minSdkVersion flutter.minSdkVersion#minSdkVersion Math.max(flutter.minSdkVersion, 23)#' android/app/build.gradle
+          fi
+          grep -n "minSdk" android/app/build.gradle* || true
+
       - name: Nombre de la app
         run: |
           MANIFEST=android/app/src/main/AndroidManifest.xml

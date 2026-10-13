@@ -2,6 +2,8 @@
 // Un solo archivo. Datos compartidos entre dispositivos via Supabase.
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -9,8 +11,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 const kSupabaseUrl = 'https://tmjejukvdcfifajnmlca.supabase.co';
 const kSupabaseKey = 'sb_publishable_yb-3O7QqTE9rgtUGJWSgdw_OXeHLgFg';
 
+// ====== FIREBASE (avisos con la app cerrada). Son datos publicos de la app, no son secretos. ======
+const kFirebaseOptions = FirebaseOptions(
+  apiKey: 'AIzaSyBwrQZniZwykxIKKgAg_i2gCnJY4k0Zwwc',
+  appId: '1:269265058861:android:49a8c46cc27ca312aa8ca4',
+  messagingSenderId: '269265058861',
+  projectId: 'comandaapp-d7f5c',
+);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp(options: kFirebaseOptions);
+  } catch (e) {
+    debugPrint('Firebase no disponible: $e');
+  }
   try {
     await Supabase.initialize(url: kSupabaseUrl, anonKey: kSupabaseKey);
   } catch (e) {
@@ -482,6 +497,40 @@ class Store extends ChangeNotifier {
   Future<void> updateUser(AppUser u) async { try { await sb.from('app_users').update(u.toRow()).eq('id', u.id); } catch (x) { _onErr(x); } }
   Future<void> deleteUser(AppUser u) async { try { await sb.from('app_users').delete().eq('id', u.id); } catch (x) { _onErr(x); } }
   /// Rol real de quien acaba de iniciar sesion, leido de la base de datos (no de la lista publica).
+  // ---- Avisos push (solo cocina y admin). Si algo falla, la app sigue igual. ----
+  String? _pushToken;
+  StreamSubscription<String>? _pushRefresh;
+  Future<void> registerPush() async {
+    try {
+      final fm = FirebaseMessaging.instance;
+      if (currentUserRole != 'cocina' && currentUserRole != 'admin') {
+        // este celular ya no debe recibir avisos de cocina (por si lo usaba otro rol antes)
+        final old = await fm.getToken();
+        if (old != null) { await sb.rpc('unregister_device', params: <String, dynamic>{'p_token': old}); }
+        return;
+      }
+      await fm.requestPermission();
+      final t = await fm.getToken();
+      if (t == null) return;
+      _pushToken = t;
+      await sb.rpc('register_device', params: <String, dynamic>{'p_token': t});
+      await _pushRefresh?.cancel();
+      _pushRefresh = fm.onTokenRefresh.listen((n) async {
+        _pushToken = n;
+        try { await sb.rpc('register_device', params: <String, dynamic>{'p_token': n}); } catch (e) { debugPrint('push refresh: $e'); }
+      });
+    } catch (e) { debugPrint('registerPush: $e'); }
+  }
+  Future<void> unregisterPush() async {
+    try {
+      await _pushRefresh?.cancel();
+      _pushRefresh = null;
+      final t = _pushToken;
+      _pushToken = null;
+      if (t != null) { await sb.rpc('unregister_device', params: <String, dynamic>{'p_token': t}); }
+    } catch (e) { debugPrint('unregisterPush: $e'); }
+  }
+
   Future<AppUser?> myProfile() async {
     try {
       final res = await sb.rpc('my_profile');
@@ -858,7 +907,8 @@ Widget _homeForRole(String role) =>
 void _logout(BuildContext context) {
   store.currentUser = '';
   store.currentUserRole = '';
-  sb.auth.signOut();
+  // primero se quita el aviso de este celular (necesita la sesion abierta), despues se cierra la sesion
+  store.unregisterPush().whenComplete(() => sb.auth.signOut());
   Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => const LoginScreen()), (r) => false);
 }
 
@@ -979,6 +1029,7 @@ class _LoginScreenState extends State<LoginScreen> {
     store.currentUser = me.name;
     store.currentUserRole = me.role;
     store.init();
+    store.registerPush();
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(store.currentUserRole)));
     setState(() => _pin = '');
   }
