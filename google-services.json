@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "269265058861",
+    "project_id": "comandaapp-d7f5c",
+    "storage_bucket": "comandaapp-d7f5c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:269265058861:android:49a8c46cc27ca312aa8ca4",
+        "android_client_info": {
+          "package_name": "com.puestocomida.comandas_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBwrQZniZwykxIKKgAg_i2gCnJY4k0Zwwc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
