@@ -18,6 +18,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # solo para guardar pubspec.lock despues de un release
     defaults:
       run:
         shell: bash
@@ -83,6 +85,20 @@ jobs:
           name: comandas-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+      - name: Guardar pubspec.lock (versiones exactas de librerias)
+        if: ${{ inputs.accion == 'release' }}
+        continue-on-error: true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f pubspec.lock
+          if git diff --cached --quiet; then
+            echo "pubspec.lock ya estaba guardado y sin cambios."
+          else
+            git commit -m "Guardar pubspec.lock del release"
+            git push
+          fi
 
       - name: Shorebird Patch (actualizacion por el aire)
         if: ${{ inputs.accion == 'patch' }}

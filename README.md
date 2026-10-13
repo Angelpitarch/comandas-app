@@ -9,7 +9,7 @@ en tiempo real entre dispositivos.
 | Rol | Qué ve y qué puede hacer |
 |---|---|
 | **Mesero** | Solo atiende mesas y pedidos para llevar: toma pedidos, los envía a cocina, cobra y libera la mesa. No ve ventas, caja, gastos ni empleados. |
-| **Cocina** | Solo ve las comandas y cambia su estado (nueva → preparando → lista). No puede anular. |
+| **Cocina** | Solo ve las comandas y cambia su estado (nueva → preparando → lista). No puede anular ni modificar el contenido de una comanda (lo impide un disparador en la base de datos). |
 | **Administrador** | Todo: usuarios y roles, menú, inventario, categorías, tasa, caja, anulaciones, empleados, gastos e historial. También puede abrir las pantallas de Mesero y de Cocina. |
 
 Esto se aplica **en la base de datos** (reglas RLS en `supabase/migrations/0002_seguridad_por_rol.sql`),
@@ -18,7 +18,7 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql` y `0003_datos_iniciales.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql` y `0004_cocina_solo_estado.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
@@ -51,6 +51,12 @@ Desde GitHub → **Actions → Build APK → Run workflow**:
 - `release`: primera vez o cambios grandes (genera el APK para instalar).
 - `patch`: actualización por el aire (Shorebird), para cambios solo de código Dart.
 
+**Actualizaciones por el aire (patch) sin romperse:** un `patch` solo funciona si las librerías son
+exactamente las mismas que las del `release` instalado. Por eso `pubspec.lock` está en el repositorio
+y el flujo lo guarda solo después de cada `release`. Regla práctica: si cambias `pubspec.yaml`
+(agregar o actualizar librerías) haz un `release` nuevo con un `version:` más alto; si solo cambias
+código Dart, haz `patch`.
+
 Secretos necesarios en GitHub (Settings → Secrets): `SHOREBIRD_TOKEN` y, para el respaldo diario,
 `SUPABASE_DB_URL`.
 
@@ -58,7 +64,7 @@ Secretos necesarios en GitHub (Settings → Secrets): `SHOREBIRD_TOKEN` y, para 
 
 ```
 lib/main.dart                         Toda la app (un solo archivo)
-supabase/migrations/                  Esquema, seguridad por rol y datos iniciales
+supabase/migrations/                  Esquema, seguridad por rol, datos iniciales y candado de cocina
 supabase/tests/prueba_roles.sql       Prueba de permisos por rol
 .github/workflows/build-apk.yml       Compilación del APK y parches Shorebird
 .github/workflows/backup.yml          Respaldo diario de la base de datos

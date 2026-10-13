@@ -13,6 +13,8 @@
 --          gastos y anulaciones = ERR; save_user = ERR; deduct = OK; my_profile=mesero.
 --  COCINA: solo lee tickets y config. tickets.update > 0, todo lo demas = ERR o 0.
 --          deduct = ERR; save_user = ERR; my_profile=cocina.
+--          Comanda de prueba: cocina_estado=1 (puede cambiar estado), cocina_cambia_nota=ERR,
+--          cocina_anula=ERR. En admin y mesero esos tres = 1, 1, 1 (no hay restriccion).
 --  ANON  : solo public_staff se puede leer; todo lo demas = ERR.
 
 do $t$
@@ -26,6 +28,8 @@ begin
       continue;
     end if;
     begin
+      -- comanda de prueba (se deshace al final del rol)
+      insert into public.tickets (table_number, status, note) values (999, 'nueva', 'prueba');
       perform set_config('request.jwt.claims', json_build_object('email', em, 'role', 'authenticated')::text, true);
       set local role authenticated;
       r := r || upper(rl) || E'\n  lee: ';
@@ -35,6 +39,9 @@ begin
       end loop;
       r := r || E'\n  escribe: ';
       begin update public.tickets set status = status; get diagnostics n = row_count; r := r || 'tickets.update=' || n || ' '; exception when others then r := r || 'tickets.update=ERR '; end;
+      begin update public.tickets set status = 'preparando' where table_number = 999; get diagnostics n = row_count; r := r || 'cocina_estado=' || n || ' '; exception when others then r := r || 'cocina_estado=ERR '; end;
+      begin update public.tickets set note = 'hack' where table_number = 999; get diagnostics n = row_count; r := r || 'cocina_cambia_nota=' || n || ' '; exception when others then r := r || 'cocina_cambia_nota=ERR '; end;
+      begin update public.tickets set status = 'anulada' where table_number = 999; get diagnostics n = row_count; r := r || 'cocina_anula=' || n || ' '; exception when others then r := r || 'cocina_anula=ERR '; end;
       begin insert into public.tickets (table_number) values (1); r := r || 'tickets.insert=OK '; exception when others then r := r || 'tickets.insert=ERR '; end;
       begin update public.dining_tables set status = status; get diagnostics n = row_count; r := r || 'mesas.update=' || n || ' '; exception when others then r := r || 'mesas.update=ERR '; end;
       begin insert into public.account_items (product_name) values ('t'); r := r || 'cuenta.insert=OK '; exception when others then r := r || 'cuenta.insert=ERR '; end;
