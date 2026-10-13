@@ -188,7 +188,7 @@ do $$
 declare t text;
 begin
   foreach t in array array['account_items','app_config','app_users','cancellations','cash_closes',
-                           'categories','dining_tables','employees','ingredients','products',
+                           'categories','dining_tables','employees','gastos','ingredients','products',
                            'sales','takeaways','tickets']
   loop
     if not exists (select 1 from pg_publication_tables
