@@ -65,6 +65,12 @@ Desde GitHub → **Actions → Build APK → Run workflow**:
 - `release`: primera vez o cambios grandes (genera el APK para instalar).
 - `patch`: actualización por el aire (Shorebird), para cambios solo de código Dart.
 
+**Si un `patch` falla con "native changes" (cambios nativos):** Shorebird se niega a publicar porque las
+piezas nativas (Gradle) de la compilacion de hoy no son identicas a las del release instalado. Si desde
+ese release solo cambio codigo Dart (`lib/`) y no se agregaron ni actualizaron plugins (compruebalo con
+`git diff <commit-del-release> HEAD --stat`), vuelve a lanzar el `patch` marcando
+**permitir_cambios_nativos**. Si cambiaste `pubspec.yaml`, haz un `release` nuevo con version mayor.
+
 **Actualizaciones por el aire (patch) sin romperse:** un `patch` solo funciona si las librerías son
 exactamente las mismas que las del `release` instalado. Por eso `pubspec.lock` está en el repositorio
 y el flujo lo guarda solo después de cada `release`. Regla práctica: si cambias `pubspec.yaml`

@@ -11,6 +11,11 @@ on:
         options:
           - release
           - patch
+      permitir_cambios_nativos:
+        description: 'Solo para patch: ignorar diferencias nativas. Marcar SOLO si desde el release unicamente cambio codigo Dart (lib/) y no se agregaron ni actualizaron plugins'
+        required: false
+        default: false
+        type: boolean
 
 env:
   SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
@@ -120,4 +125,4 @@ jobs:
         with:
           platform: android
           release-version: latest
-          args: "-- --no-tree-shake-icons"
+          args: "${{ inputs.permitir_cambios_nativos && '--allow-native-diffs ' || '' }}-- --no-tree-shake-icons"
