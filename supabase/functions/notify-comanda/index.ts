@@ -67,7 +67,17 @@ Deno.serve(async (req) => {
         message: {
           token,
           notification: { title, body },
-          android: { priority: 'HIGH', notification: { sound: 'default' } },
+          android: {
+            priority: 'HIGH',
+            ttl: '300s', // si el celular esta apagado mas de 5 min, no llega un aviso viejo
+            notification: {
+              channel_id: 'comandas_nuevas', // canal de importancia alta creado por la app (ventana emergente)
+              sound: 'default',
+              default_vibrate_timings: true,
+              notification_priority: 'PRIORITY_MAX',
+              visibility: 'PUBLIC',
+            },
+          },
         },
       }),
     });

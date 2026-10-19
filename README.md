@@ -18,7 +18,7 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql`, `0005_cierre_con_gastos.sql`, `0006_avisos_push.sql`, `0007_disparador_avisos.sql` y `0008_pin_6_digitos.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql`, `0005_cierre_con_gastos.sql`, `0006_avisos_push.sql`, `0007_disparador_avisos.sql`, `0008_pin_6_digitos.sql` y `0009_pines_obvios.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
@@ -40,9 +40,11 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 - **Authentication → Rate limits**: deja activos los límites de inicio de sesión.
 - **Authentication → Password security**: activa "Leaked password protection" si tu plan lo permite.
 - La pantalla de acceso lista el personal (nombre y correo) sin sesión. El PIN es de 6 números
-  (un millón de combinaciones), pero quien conozca un correo aún puede intentar adivinarlo. Evita PIN
-  obvios (`123456`, `000000`, fechas de nacimiento), cámbialos si sospechas algo y mantén los límites
-  de inicio de sesión activos.
+  (un millón de combinaciones), pero quien conozca un correo aún puede intentar adivinarlo. La app y
+  la base de datos (`0009_pines_obvios.sql`) rechazan PIN obvios: un solo número repetido (`000000`),
+  escaleras (`123456`, `654321`), repeticiones (`121212`, `123123`), capicúas (`123321`) y parejas
+  (`112233`). Aun así evita fechas de nacimiento, cámbialos si sospechas algo y mantén los límites
+  de inicio de sesión activos. La regla solo aplica a PIN nuevos: los que ya existen siguen entrando.
 - **PIN de 4 números (usuarios antiguos):** pueden entrar con el botón "Entrar con PIN de 4 números"
   y la app les exige crear uno de 6 antes de continuar. Si el administrador cambia el PIN de alguien
   desde **Usuarios**, también cambia su clave real de acceso. Antes de hacerlo, comprueba que el
@@ -58,6 +60,14 @@ este cerrada. Piezas: la app (registra el celular al iniciar sesion), la tabla `
 datos que la llama. Secretos en Supabase (nunca en el repositorio): `WEBHOOK_SECRET` y
 `FCM_SERVICE_ACCOUNT` (JSON de la cuenta de servicio de Firebase). Los datos de `kFirebaseOptions`
 en `lib/main.dart` son publicos por diseno.
+
+**Aviso emergente (ventana que aparece sobre lo que estes haciendo):** Android solo lo muestra si la
+notificacion llega por un canal de importancia alta. La app lo crea al abrirse
+(`android_extra/MainActivity.kt.tpl`, que el workflow copia al proyecto Android) y la funcion
+`notify-comanda` envia cada aviso por el canal `comandas_nuevas` con sonido y vibracion. Como toca
+codigo nativo, publicarlo exige un `release` nuevo (version mayor) e instalar el APK; no se puede
+enviar como `patch`. Si el celular tiene las notificaciones de Comandas silenciadas o el canal
+"Comandas nuevas" en baja prioridad (Ajustes → Apps → Comandas → Notificaciones), no aparecera la ventana.
 
 ## Compilar el APK
 

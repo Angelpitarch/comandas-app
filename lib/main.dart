@@ -36,6 +36,20 @@ Future<void> main() async {
 
 SupabaseClient get sb => Supabase.instance.client;
 
+/// PIN demasiado facil de adivinar (misma regla que private.pin_debil en la base de datos).
+bool pinDebil(String p) {
+  if (p.length != 6) return false;
+  if (RegExp(r'^(\d)\1{5}$').hasMatch(p)) return true;          // 000000, 111111
+  if (RegExp(r'^(\d\d)\1\1$').hasMatch(p)) return true;          // 121212
+  if (RegExp(r'^(\d\d\d)\1$').hasMatch(p)) return true;          // 123123
+  if (RegExp(r'^(\d)(\d)(\d)\3\2\1$').hasMatch(p)) return true; // 123321
+  if (RegExp(r'^(\d)\1(\d)\2(\d)\3$').hasMatch(p)) return true; // 112233
+  const escaleras = '0123456789012345678901234567890'; // ascendente con vuelta al 0
+  final desc = escaleras.split('').reversed.join();
+  return escaleras.contains(p) || desc.contains(p);
+}
+const kMsgPinFacil = 'Ese PIN es muy facil de adivinar (como 123456 o 111111). Elige otro.';
+
 // ======================= MODELOS =======================
 enum Currency { usd, ves }
 extension CurCode on Currency { String get code => this == Currency.usd ? 'USD' : 'VES'; }
@@ -558,6 +572,7 @@ class Store extends ChangeNotifier {
         case 'ok': return null;
         case 'pin_actual_incorrecto': return 'El PIN actual no es correcto';
         case 'pin_nuevo_invalido': return 'El PIN nuevo debe ser de 6 numeros';
+        case 'pin_nuevo_facil': return kMsgPinFacil;
         case 'sin_sesion': return 'Tu sesion expiro. Vuelve a entrar e intenta de nuevo.';
         default: return 'No se pudo cambiar el PIN. Revisa tu conexion.';
       }
@@ -3454,6 +3469,7 @@ class _UserFormState extends State<UserForm> {
     if (name.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
     final editing = widget.existing != null;
     if ((!editing || pin.isNotEmpty) && (pin.length != 6 || int.tryParse(pin) == null)) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 6 numeros'))); return; }
+    if (pin.isNotEmpty && pinDebil(pin)) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(kMsgPinFacil))); return; }
     setState(() => _saving = true);
     await store.saveUser(id: widget.existing?.id, name: name, pin: pin, role: _role, active: _active);
     if (!mounted) return;
@@ -3651,6 +3667,7 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
       setState(() => _err = 'El PIN nuevo debe ser de 6 numeros'); return;
     }
     if (nuevo != rep) { setState(() => _err = 'Los PIN nuevos no coinciden'); return; }
+    if (pinDebil(nuevo)) { setState(() => _err = kMsgPinFacil); return; }
     if (nuevo == actual) { setState(() => _err = 'El PIN nuevo debe ser distinto al actual'); return; }
     setState(() { _saving = true; _err = null; });
     final err = await store.cambiarMiPin(actual, nuevo);

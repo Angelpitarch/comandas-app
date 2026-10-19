@@ -84,6 +84,22 @@ jobs:
           MANIFEST=android/app/src/main/AndroidManifest.xml
           sed -i 's#android:label="comandas_app"#android:label="Comandas"#' "$MANIFEST"
 
+      - name: Canal de aviso emergente (comandas nuevas)
+        run: |
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          ACT=$(find android/app/src/main -name 'MainActivity.kt' | head -n1)
+          if [ -z "$ACT" ]; then
+            echo "::warning::No se encontro MainActivity.kt; el aviso emergente no se activa"
+          else
+            PKG=$(grep -m1 '^package ' "$ACT" | sed 's/^package //; s/[[:space:]]*$//')
+            sed "s#__PACKAGE__#$PKG#" android_extra/MainActivity.kt.tpl > "$ACT"
+            echo "MainActivity.kt reemplazado (package $PKG)"
+          fi
+          if ! grep -q "default_notification_channel_id" "$MANIFEST"; then
+            sed -i 's#</application>#    <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="comandas_nuevas"/>\n    </application>#' "$MANIFEST"
+          fi
+          grep -n "comandas_nuevas" "$MANIFEST" || true
+
       - name: Generar icono de la app
         run: |
           flutter pub get
