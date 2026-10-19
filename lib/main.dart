@@ -557,7 +557,7 @@ class Store extends ChangeNotifier {
       switch (res.toString()) {
         case 'ok': return null;
         case 'pin_actual_incorrecto': return 'El PIN actual no es correcto';
-        case 'pin_nuevo_invalido': return 'El PIN nuevo debe ser de 4 numeros';
+        case 'pin_nuevo_invalido': return 'El PIN nuevo debe ser de 6 numeros';
         case 'sin_sesion': return 'Tu sesion expiro. Vuelve a entrar e intenta de nuevo.';
         default: return 'No se pudo cambiar el PIN. Revisa tu conexion.';
       }
@@ -1009,9 +1009,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _tap(String d) {
-    if (_pin.length >= 4 || _checking) return;
+    if (_pin.length >= 6 || _checking) return;
     setState(() { _pin += d; _err = null; });
-    if (_pin.length == 4) _validate();
+    if (_pin.length == 6) _validate();
   }
 
   Future<void> _validate() async {
@@ -1030,7 +1030,12 @@ class _LoginScreenState extends State<LoginScreen> {
     store.currentUserRole = me.role;
     store.init();
     store.registerPush();
-    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(store.currentUserRole)));
+    final legacy = _pin.length < 6;
+    final usado = _pin;
+    final destino = legacy
+        ? ChangePinScreen(forzadoActual: usado)
+        : _homeForRole(store.currentUserRole);
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => destino));
     setState(() => _pin = '');
   }
 
@@ -1097,7 +1102,7 @@ class _LoginScreenState extends State<LoginScreen> {
           icon: const Icon(Icons.arrow_back, size: 16), label: const Text('Cambiar usuario')),
         const Text('Ingresa tu PIN'),
         const SizedBox(height: 12),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(4, (i) => Container(
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: List.generate(6, (i) => Container(
               margin: const EdgeInsets.symmetric(horizontal: 8), width: 18, height: 18,
               decoration: BoxDecoration(shape: BoxShape.circle,
                   color: i < _pin.length ? kPrimary : Colors.transparent,
@@ -1106,6 +1111,10 @@ class _LoginScreenState extends State<LoginScreen> {
             ? const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
             : Text(_err ?? '', style: const TextStyle(color: Colors.red))),
         _keypad(),
+        // PIN antiguo de 4 o 5 numeros: se entra con este boton y la app pide crear uno de 6.
+        SizedBox(height: 40, child: (_pin.length >= 4 && _pin.length < 6 && !_checking)
+            ? TextButton(onPressed: _validate, child: const Text('Entrar con PIN de 4 numeros'))
+            : null),
       ]);
 
   Widget _k(String label, {VoidCallback? action, Widget? child}) => Padding(padding: const EdgeInsets.all(6),
@@ -3444,7 +3453,7 @@ class _UserFormState extends State<UserForm> {
     final pin = _pin.text.trim();
     if (name.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe el nombre'))); return; }
     final editing = widget.existing != null;
-    if ((!editing || pin.isNotEmpty) && (pin.length != 4 || int.tryParse(pin) == null)) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 4 numeros'))); return; }
+    if ((!editing || pin.isNotEmpty) && (pin.length != 6 || int.tryParse(pin) == null)) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El PIN debe ser de 6 numeros'))); return; }
     setState(() => _saving = true);
     await store.saveUser(id: widget.existing?.id, name: name, pin: pin, role: _role, active: _active);
     if (!mounted) return;
@@ -3468,8 +3477,8 @@ class _UserFormState extends State<UserForm> {
       body: ListView(padding: const EdgeInsets.all(16), children: [
         TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre', border: OutlineInputBorder())),
         const SizedBox(height: 12),
-        TextField(controller: _pin, keyboardType: TextInputType.number, maxLength: 4,
-          decoration: InputDecoration(labelText: widget.existing == null ? 'PIN (4 numeros)' : 'PIN nuevo (vacio = no cambiar)', border: const OutlineInputBorder(), counterText: '')),
+        TextField(controller: _pin, keyboardType: TextInputType.number, maxLength: 6,
+          decoration: InputDecoration(labelText: widget.existing == null ? 'PIN (6 numeros)' : 'PIN nuevo (vacio = no cambiar)', border: const OutlineInputBorder(), counterText: '')),
         const SizedBox(height: 12),
         DropdownButtonFormField<String>(value: _role,
           decoration: const InputDecoration(labelText: 'Rol', border: OutlineInputBorder()),
@@ -3616,7 +3625,10 @@ class TableTicketsScreen extends StatelessWidget {
 
 // ======================= CAMBIAR MI PIN =======================
 class ChangePinScreen extends StatefulWidget {
-  const ChangePinScreen({super.key});
+  /// Si viene con valor, es el cambio obligatorio tras entrar con un PIN antiguo:
+  /// no pide el PIN actual y no se puede salir sin crear el nuevo.
+  final String? forzadoActual;
+  const ChangePinScreen({super.key, this.forzadoActual});
   @override
   State<ChangePinScreen> createState() => _ChangePinScreenState();
 }
@@ -3632,11 +3644,11 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
 
   Future<void> _guardar() async {
     if (_saving) return;
-    final actual = _actual.text.trim();
+    final actual = widget.forzadoActual ?? _actual.text.trim();
     final nuevo = _nuevo.text.trim();
     final rep = _repite.text.trim();
-    if (nuevo.length != 4 || int.tryParse(nuevo) == null) {
-      setState(() => _err = 'El PIN nuevo debe ser de 4 numeros'); return;
+    if (nuevo.length != 6 || int.tryParse(nuevo) == null) {
+      setState(() => _err = 'El PIN nuevo debe ser de 6 numeros'); return;
     }
     if (nuevo != rep) { setState(() => _err = 'Los PIN nuevos no coinciden'); return; }
     if (nuevo == actual) { setState(() => _err = 'El PIN nuevo debe ser distinto al actual'); return; }
@@ -3647,29 +3659,41 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
     if (err != null) { setState(() => _err = err); return; }
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('PIN actualizado. Usalo la proxima vez que entres.')));
-    Navigator.pop(context);
+    if (widget.forzadoActual != null) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _homeForRole(store.currentUserRole)));
+    } else {
+      Navigator.pop(context);
+    }
   }
 
   Widget _campo(TextEditingController c, String label) => Padding(
         padding: const EdgeInsets.only(bottom: 14),
-        child: TextField(controller: c, keyboardType: TextInputType.number, maxLength: 4, obscureText: true,
+        child: TextField(controller: c, keyboardType: TextInputType.number, maxLength: 6, obscureText: true,
           decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), counterText: '')),
       );
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Cambiar mi PIN')),
+    final forzado = widget.forzadoActual != null;
+    return PopScope(canPop: !forzado, child: Scaffold(
+      appBar: AppBar(title: Text(forzado ? 'Crea tu PIN nuevo' : 'Cambiar mi PIN'),
+        automaticallyImplyLeading: !forzado,
+        actions: [
+          if (forzado) TextButton(
+            onPressed: () => _logout(context),
+            child: const Text('Salir')),
+        ]),
       body: Center(child: SingleChildScrollView(child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
         child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.lock_reset, size: 56, color: kPrimary),
           const SizedBox(height: 6),
           Text(store.currentUser, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const Text('Solo tu puedes cambiar tu PIN', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(forzado ? 'Por seguridad, el PIN ahora es de 6 numeros. Crea el tuyo para continuar.' : 'Solo tu puedes cambiar tu PIN',
+              textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 20),
-          _campo(_actual, 'PIN actual'),
-          _campo(_nuevo, 'PIN nuevo (4 numeros)'),
+          if (!forzado) _campo(_actual, 'PIN actual'),
+          _campo(_nuevo, 'PIN nuevo (6 numeros)'),
           _campo(_repite, 'Repite el PIN nuevo'),
           if (_err != null) Padding(padding: const EdgeInsets.only(bottom: 10),
             child: Text(_err!, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600))),
@@ -3679,6 +3703,6 @@ class _ChangePinScreenState extends State<ChangePinScreen> {
             label: Text(_saving ? 'Guardando...' : 'Guardar PIN nuevo'))),
         ])),
       ))),
-    );
+    ));
   }
 }
