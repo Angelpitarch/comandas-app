@@ -18,11 +18,11 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
 ## Poner en marcha la base de datos (una sola vez)
 
 1. En Supabase abre **SQL Editor** y ejecuta, en orden, los archivos de `supabase/migrations/`:
-   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql` `0005_cierre_con_gastos.sql`, `0006_avisos_push.sql` y `0007_disparador_avisos.sql`.
+   `0001_schema.sql`, `0002_seguridad_por_rol.sql`, `0003_datos_iniciales.sql`, `0004_cocina_solo_estado.sql`, `0005_cierre_con_gastos.sql`, `0006_avisos_push.sql`, `0007_disparador_avisos.sql` y `0008_pin_6_digitos.sql`.
    Son seguros de repetir: no borran datos.
 2. Crea el primer administrador:
    - En **Authentication → Users → Add user** crea un usuario con su correo y la contraseña
-     `<PIN de 4 dígitos>-comandas` (por ejemplo `1234-comandas`). Marca "Auto confirm".
+     `<PIN de 6 números>-comandas` (tu PIN real de 6 números seguido de `-comandas`). Marca "Auto confirm".
    - En **SQL Editor** ejecuta (con tus datos):
      ```sql
      insert into public.app_users (name, pin, role, active, email)
@@ -39,9 +39,14 @@ no solo en la pantalla: aunque alguien modifique la app, el servidor rechaza lo 
   Así nadie puede crearse una cuenta por su cuenta.
 - **Authentication → Rate limits**: deja activos los límites de inicio de sesión.
 - **Authentication → Password security**: activa "Leaked password protection" si tu plan lo permite.
-- La pantalla de acceso lista el personal (nombre y correo) sin sesión. Con PIN de 4 dígitos, quien
-  conozca un correo puede intentar adivinar el PIN. Usa PIN poco obvios, cámbialos si sospechas algo
-  y mantén los límites de inicio de sesión activos.
+- La pantalla de acceso lista el personal (nombre y correo) sin sesión. El PIN es de 6 números
+  (un millón de combinaciones), pero quien conozca un correo aún puede intentar adivinarlo. Evita PIN
+  obvios (`123456`, `000000`, fechas de nacimiento), cámbialos si sospechas algo y mantén los límites
+  de inicio de sesión activos.
+- **PIN de 4 números (usuarios antiguos):** pueden entrar con el botón "Entrar con PIN de 4 números"
+  y la app les exige crear uno de 6 antes de continuar. Si el administrador cambia el PIN de alguien
+  desde **Usuarios**, también cambia su clave real de acceso. Antes de hacerlo, comprueba que el
+  celular de esa persona ya tenga la versión con teclado de 6 números.
 - Nunca subas al repositorio llaves `service_role`, contraseñas ni archivos `.env`.
   La llave `sb_publishable_...` que está en `lib/main.dart` sí es pública por diseño.
 
